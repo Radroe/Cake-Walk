@@ -1,10 +1,11 @@
 // Cake Walk: startup, screens and navigation, Home, Settings, themes, Sprinkle.
 
 import { CONFIG } from './config.js';
-import { STORAGE, PROJECTS, WORKER } from './storage.js';
+import { STORAGE, PROJECTS, WORKER, SAVE, SESSION } from './storage.js';
 import { DEBUG } from './debug.js';
 import { EDITOR } from './editor.js';
 import { EXPORT } from './export.js';
+import { LOADS, renderRecovery, renderStorage, backupNow, restoreBackup } from './safety.js';
 
 DEBUG.init();
 
@@ -218,6 +219,11 @@ function emptyState(title, text) {
 
 const ui = { sprinkleSVG, toast, sheet, soon, emptyState, mascotName, go: (name, params) => go(name, params), get settings() { return settings; } };
 
+async function reloadSettings() {
+  settings = await STORAGE.loadSettings().catch(() => settings);
+  if (settings.theme) applyTheme(settings.theme);
+}
+
 // ---------- Screens ----------
 
 const STARTER_CHALLENGES = [
@@ -279,12 +285,28 @@ const screens = {
   },
 
   async editor(main, params) {
-    await EDITOR.render(main, ui, params.id || (await STORAGE.get('meta', 'lastProject')));
+    const id = params.id || (await STORAGE.get('meta', 'lastProject'));
+    // Two failed loads in a row open Recovery instead of crashing again (Prompt 5).
+    if (id && !params.safe && (await LOADS.failures(id)) >= 2) {
+      DEBUG.log('warn', 'A project failed to load twice in a row. Opened Recovery.', 'safety');
+      return go('recovery', { id });
+    }
+    if (id) await LOADS.begin(id);
+    await EDITOR.render(main, ui, id, { restore: params.restore, safe: params.safe });
+    if (id) await LOADS.ok();
     if (EDITOR.project) await STORAGE.put('meta', EDITOR.project.id, 'lastProject');
   },
 
   async export(main, params) {
-    await EXPORT.render(main, ui, params.id);
+    await EXPORT.render(main, ui, params.id, { autostart: params.autostart });
+  },
+
+  async recovery(main, params) {
+    await renderRecovery(main, ui, params);
+  },
+
+  async storage(main) {
+    await renderStorage(main, ui);
   },
 
   async settings(main) {
@@ -409,6 +431,9 @@ async function go(name, params = {}) {
   if (current === 'editor' && name !== 'editor') await EDITOR.close().catch(() => {});
   current = name;
   currentParams = params;
+  // Remember where you are, so a relaunch comes back here (Prompt 5). Only plain values are kept.
+  const keep = params.id ? { id: params.id } : {};
+  SESSION.set({ screen: name, params: keep, ...(name === 'editor' ? {} : { panel: null, selected: null, playhead: null }) });
   // The editor and export screens use the whole screen (no tab bar, no install banner).
   $('#app').classList.toggle('focus', FOCUS_SCREENS.has(name));
   const main = $('#screen');
@@ -447,18 +472,18 @@ async function newVideo() {
 // ---------- Settings saving (debounced; stays on the phone) ----------
 
 const pendingSettings = {};
-let settingsTimer = null;
 let lastSavedToast = 0;
 
 function queueSetting(key, value) {
   settings[key] = value;
   pendingSettings[key] = value;
-  clearTimeout(settingsTimer);
-  settingsTimer = setTimeout(flushSettings, 600);
+  SAVE.queue('settings', writeSettings, 600);
 }
 
-async function flushSettings() {
-  clearTimeout(settingsTimer);
+// Settings go through the shared save system too (Prompt 5).
+function flushSettings() { return SAVE.now('settings', writeSettings).catch(() => {}); }
+
+async function writeSettings() {
   const entries = Object.entries(pendingSettings);
   if (!entries.length) return;
   for (const [k] of entries) delete pendingSettings[k];
@@ -475,8 +500,8 @@ async function flushSettings() {
 }
 
 async function saveOpenWork() {
-  await flushSettings();
-  await EDITOR.saveOpenWork();
+  await EDITOR.saveOpenWork();   // queues the open project, then flushes every pending save
+  await SAVE.flush();
 }
 
 // ---------- Icon Generator (works in plain Chrome before install) ----------
@@ -568,6 +593,11 @@ function bindGlobal() {
     else if (act === 'new-video') newVideo();
     else if (act === 'more') sheet({ title: 'More tools', body: clone('tpl-more') });
     else if (act === 'icons') go('icons');
+    else if (act === 'backup') {
+      backupNow(ui).catch((err) => { DEBUG.log('error', `Backup: ${err.message}`, 'safety'); toast('Backup hit a snag. Debug has the details.'); });
+    } else if (act === 'restore') {
+      if (await restoreBackup(ui)) { await reloadSettings(); go('projects'); }
+    }
     else if (act === 'hide-install') {
       try { sessionStorage.setItem('cw-hide-install', '1'); } catch {}
       $('#top-slot').innerHTML = '';
@@ -593,7 +623,7 @@ function bindGlobal() {
     }
   });
 
-  // Save on the way out (a bonus; Prompt 5 adds autosave as the real safety net).
+  // Save on the way out: a bonus. Autosave within a second of every change is the real safety net.
   document.addEventListener('visibilitychange', () => { if (document.hidden) saveOpenWork(); });
   window.addEventListener('pagehide', () => { saveOpenWork(); });
 }
@@ -642,6 +672,29 @@ async function setupServiceWorker() {
 
 // ---------- Startup ----------
 
+// Come back exactly where you were: the project, screen, playhead, selection and open panel (Prompt 5).
+async function restoreSession(session, stopped) {
+  if (stopped?.projectId) {
+    // The half-written file is already deleted.
+    await go('home');
+    const yes = await sheet({
+      title: 'Your export stopped when the app closed. Restart it?',
+      text: 'The half-written file is cleaned up. Keep Cake Walk open and on screen until it finishes.',
+      actions: [{ label: 'Not now', value: false }, { label: 'Restart', value: true, main: true }]
+    });
+    if (yes) go('export', { id: stopped.projectId, autostart: true });
+    else if (session?.screen === 'editor' || session?.screen === 'export') go('editor', { id: stopped.projectId });
+    return;
+  }
+  const s = session?.screen;
+  const skip = !s || s === 'home' || !screens[s] || s === 'icons' || s === 'recovery';
+  if (skip) { await go('home'); return; }
+  const id = session.params?.id;
+  if (s === 'editor') await go('editor', { id, restore: session });
+  else await go(s, id ? { id } : {});
+  if (current === s) toast('Restored. Right where you left off.', { sparkle: true, ms: 1800 });
+}
+
 async function start() {
   const t0 = performance.now();
   try {
@@ -660,10 +713,10 @@ async function start() {
 
   bindGlobal();
   renderInstallBanner();
+  const session = await SESSION.get();
   const stopped = await EXPORT.cleanupInterrupted();
-  if (stopped) setTimeout(() => toast('Your export stopped when the app closed. Open the project and export again.', { ms: 4200 }), 800);
   lastCaps = await DEBUG.getCaps();
-  await go('home');
+  await restoreSession(session, stopped);
   DEBUG.log('info', `Launched v${CONFIG.APP_VERSION} as ${DEBUG.displayMode()} in ${Math.round(performance.now() - t0)} ms`);
 
   setupServiceWorker();

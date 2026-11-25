@@ -422,3 +422,17 @@ textarea:focus { border-color: var(--pink-ink); }
 .list-btn.plat { flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; }
 .list-btn.plat::after { display: none; }
 .list-btn.plat.on { border-color: var(--pink); box-shadow: inset 0 0 0 1px var(--pink); }
+
+/* ---------- Prompt 5: replace clips, Storage, Recovery ---------- */
+.missing .miss-row, .store-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
+.missing .miss-row:first-of-type, .store-row:first-child { border-top: 0; }
+.store-row .grow, .miss-row .grow { min-width: 0; }
+.store-row b.wrap { display: block; overflow-wrap: anywhere; font-size: 14px; }
+.store-tip { border-left: 3px solid var(--amber); padding-left: 8px; margin-top: 4px; }
+.tips { margin: 6px 0 0; padding-left: 18px; }
+.tips li { margin: 6px 0; line-height: 1.4; }
+
+/* Roe's Cake Walk avatar on Home */
+.greet .bubble { flex: 1; min-width: 0; }
+.greet .mascot { width: 80px; height: 80px; }
+.avatar { width: 64px; height: 64px; flex: none; border-radius: 50%; object-fit: cover; border: 3px solid var(--card); box-shadow: 0 0 0 2px #FF2D95, 0 6px 16px rgba(255,45,149,.25); align-self: flex-start; }

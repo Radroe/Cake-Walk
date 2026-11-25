@@ -3,7 +3,7 @@
 
 export const CONFIG = Object.freeze({
   APP_NAME: 'Cake Walk',
-  APP_VERSION: '1.3.0',
+  APP_VERSION: '1.4.1',
 
   // Mediabunny: one exact version, ES module build, served by jsDelivr.
   // 1.66.4 was the newest 1.x on the npm registry on Nov 24, 2026.
@@ -13,8 +13,9 @@ export const CONFIG = Object.freeze({
 
   // Saved-data schema. Prompt 5 adds step-by-step upgrades on top of this.
   // 2: adds the thumbs store (filmstrip pictures, kept out of the project record).
+  // 3: adds the undo store (each project's last 200 steps) and project fields for platform and last opened.
   DB_NAME: 'cakewalk',
-  SCHEMA_VERSION: 2,
+  SCHEMA_VERSION: 3,
 
   // Ask Sprinkle (Prompt 10). // VERIFY the current model name at Prompt 10.
   AI_MODEL: 'gemini-2.5-flash',

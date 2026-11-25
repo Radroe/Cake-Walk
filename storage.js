@@ -1,6 +1,6 @@
-// Cake Walk: STORAGE, PROJECTS, WORKER and OPFS
+// Cake Walk: STORAGE, PROJECTS, SAVE, BACKUP, WORKER and OPFS
 // IndexedDB holds all metadata. Video bytes live in OPFS, handled inside the Worker.
-// Prompt 5 hardens this into the one shared save system.
+// SAVE is the one shared save system (Prompt 5): everything that changes saves through it, within a second.
 
 import { CONFIG } from './config.js';
 
@@ -19,8 +19,32 @@ const MIGRATIONS = [
   // 1 -> 2: filmstrip thumbnails live in their own store, keyed by asset id
   (db) => {
     db.createObjectStore('thumbs');                         // assetId -> [Blob, ...]
+  },
+  // 2 -> 3: each project's undo history (last 200 steps), keyed by project id
+  (db) => {
+    db.createObjectStore('undo');                           // projectId -> { undo: [...], redo: [...] }
   }
 ];
+
+// Step-by-step upgrades for the project records themselves. Entry n upgrades a project from schema n to n + 1.
+// Old projects are upgraded when they're read, so an app update never breaks or erases them.
+const PROJECT_MIGRATIONS = {
+  // 1 -> 2: the timeline arrived (Prompt 2)
+  1: (p) => { p.assets ||= {}; p.clips ||= []; p.music ??= null; p.caption ??= ''; },
+  // 2 -> 3: target platform (Prompt 4) and last-opened time (Prompt 5)
+  2: (p) => { p.platform ||= 'tiktok'; p.exportPicks ??= null; p.openedAt ||= p.updatedAt || p.createdAt || Date.now(); }
+};
+
+export function upgradeProject(p) {
+  if (!p) return p;
+  let v = p.schema || 1;
+  while (v < CONFIG.SCHEMA_VERSION) {
+    PROJECT_MIGRATIONS[v]?.(p);
+    v++;
+  }
+  p.schema = CONFIG.SCHEMA_VERSION;
+  return p;
+}
 
 let dbPromise = null;
 
@@ -100,10 +124,10 @@ export const STORAGE = {
 
 export const PROJECTS = {
   async list() {
-    const all = await STORAGE.getAll('projects');
+    const all = (await STORAGE.getAll('projects')).map(upgradeProject);
     return all.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   },
-  async get(id) { return STORAGE.get('projects', id); },
+  async get(id) { return upgradeProject(await STORAGE.get('projects', id)); },
   async create({ name, lane = 'PRO' }) {
     const now = Date.now();
     const project = {
@@ -116,7 +140,10 @@ export const PROJECTS = {
       assets: {},     // assetId -> what was imported (file path in OPFS, size, codec, length)
       clips: [],      // the timeline, in order: { id, assetId, in, out, speed, volume, muted }
       music: null,    // { assetId, volume, fadeIn, fadeOut }
-      caption: ''
+      caption: '',
+      platform: 'tiktok',
+      exportPicks: null,
+      openedAt: now
     };
     await STORAGE.put('projects', project);
     return project;
@@ -127,7 +154,109 @@ export const PROJECTS = {
     await STORAGE.put('projects', project);
     return project;
   },
-  async remove(id) { return STORAGE.del('projects', id); }
+  async remove(id) {
+    await STORAGE.del('projects', id);
+    await STORAGE.del('undo', id).catch(() => {});
+  },
+  // OPFS paths a project uses (its clips and music).
+  paths(p) { return Object.values(p?.assets || {}).map((a) => a.path).filter(Boolean); }
+};
+
+// ---------- SAVE: the one shared save system (Prompt 5) ----------
+// SAVE.queue(key, fn) runs fn within a second of the last change for that key (autosave, the real safety net).
+// SAVE.flush() runs everything waiting right now: on hide, on pagehide and before an update (a bonus, because
+// iOS may close the app before those finish). Recipes, templates and anything later saves through here too.
+
+const saveJobs = new Map();   // key -> { fn, timer }
+const saveListeners = new Set();
+let saveFailNotified = 0;
+
+async function runJob(key) {
+  const job = saveJobs.get(key);
+  if (!job) return;
+  saveJobs.delete(key);
+  clearTimeout(job.timer);
+  try {
+    await job.fn();
+    saveListeners.forEach((l) => l({ key, ok: true }));
+  } catch (err) {
+    saveListeners.forEach((l) => l({ key, ok: false, error: err }));
+    if (Date.now() - saveFailNotified > 5000) saveFailNotified = Date.now();
+    throw err;
+  }
+}
+
+export const SAVE = {
+  queue(key, fn, delay = 500) {
+    const prev = saveJobs.get(key);
+    if (prev) clearTimeout(prev.timer);
+    const job = { fn, timer: setTimeout(() => runJob(key).catch(() => {}), Math.min(delay, 1000)) };
+    saveJobs.set(key, job);
+  },
+  async now(key, fn) {
+    SAVE.queue(key, fn);
+    return runJob(key);
+  },
+  async flush() {
+    const keys = [...saveJobs.keys()];
+    const results = await Promise.allSettled(keys.map((k) => runJob(k)));
+    return results.every((r) => r.status === 'fulfilled');
+  },
+  get pending() { return saveJobs.size; },
+  onResult(fn) { saveListeners.add(fn); return () => saveListeners.delete(fn); }
+};
+
+// Where you were: screen, project, playhead, selection and open panel. Restored on relaunch.
+export const SESSION = {
+  async get() { try { return await STORAGE.get('meta', 'session'); } catch { return null; } },
+  set(patch) {
+    SESSION.current = { ...(SESSION.current || {}), ...patch, at: Date.now() };
+    SAVE.queue('session', () => STORAGE.put('meta', SESSION.current, 'session'), 700);
+  },
+  current: null
+};
+
+// Undo history per project.
+export const UNDO = {
+  async load(projectId) { try { return (await STORAGE.get('undo', projectId)) || { undo: [], redo: [] }; } catch { return { undo: [], redo: [] }; } },
+  save(projectId, undo, redo) {
+    SAVE.queue(`undo:${projectId}`, () => STORAGE.put('undo', { undo: undo.slice(-CONFIG.EDITOR.UNDO_LIMIT), redo: redo.slice(-CONFIG.EDITOR.UNDO_LIMIT) }, projectId), 900);
+  }
+};
+
+// ---------- BACKUP: edit data only (projects, templates, settings), never clips, the AI key or the chibi ----------
+
+const SECRET_SETTING = /key|chibi|token|secret/i;
+
+export const BACKUP = {
+  KIND: 'cakewalk-backup',
+  async make() {
+    const projects = await PROJECTS.list();
+    const settings = await STORAGE.loadSettings();
+    const safeSettings = Object.fromEntries(Object.entries(settings).filter(([k]) => !SECRET_SETTING.test(k)));
+    const templates = (await STORAGE.get('meta', 'templates').catch(() => null)) || [];
+    const recipes = (await STORAGE.get('meta', 'recipes').catch(() => null)) || [];
+    return {
+      kind: BACKUP.KIND, app: CONFIG.APP_NAME, appVersion: CONFIG.APP_VERSION, schema: CONFIG.SCHEMA_VERSION,
+      at: new Date().toISOString(), projects, templates, recipes, settings: safeSettings
+    };
+  },
+  // Returns { projects: n, renamed: n }. Clips aren't in a backup, so restored projects ask for them again.
+  async restore(data) {
+    if (!data || data.kind !== BACKUP.KIND || !Array.isArray(data.projects)) throw new Error('This isn\'t a Cake Walk backup file.');
+    const existing = new Set((await STORAGE.getAllKeys('projects')));
+    let renamed = 0;
+    for (const raw of data.projects) {
+      const p = upgradeProject(JSON.parse(JSON.stringify(raw)));
+      if (!p.id || existing.has(p.id)) { p.id = crypto.randomUUID(); p.name = `${p.name || 'Project'} (restored)`; renamed++; }
+      p.restoredAt = Date.now();
+      await STORAGE.put('projects', p);
+    }
+    for (const [k, v] of Object.entries(data.settings || {})) if (!SECRET_SETTING.test(k)) await STORAGE.saveSetting(k, v);
+    if (Array.isArray(data.templates) && data.templates.length) await STORAGE.put('meta', data.templates, 'templates');
+    if (Array.isArray(data.recipes) && data.recipes.length) await STORAGE.put('meta', data.recipes, 'recipes');
+    return { projects: data.projects.length, renamed };
+  }
 };
 
 // ---------- Worker client ----------

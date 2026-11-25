@@ -96,6 +96,7 @@
           <h1 data-slot="greeting">Hey gorgeous.</h1>
           <p class="muted" data-slot="sub">Ready to serve?</p>
         </div>
+        <img class="avatar" src="./avatar.jpg" alt="Cake Walk avatar" width="64" height="64">
       </header>
       <div data-slot="warnings"></div>
       <article class="card today">
@@ -124,7 +125,7 @@
   <template id="tpl-more">
     <div class="sheet-list">
       <button class="list-btn" data-act="soon" data-feature="Remix">Remix a video I like</button>
-      <button class="list-btn" data-act="soon" data-feature="Storage">Storage</button>
+      <button class="list-btn" data-go="storage">Storage</button>
       <button class="list-btn" data-act="soon" data-feature="Caption helper">Caption helper</button>
       <button class="list-btn" data-act="soon" data-feature="Agency kit">Agency kit</button>
       <button class="list-btn" data-act="soon" data-feature="KPI log">KPI log</button>
@@ -316,6 +317,16 @@
         <p class="label">Storage</p>
         <div class="kv"><span>Protected storage</span><b data-slot="persist">Checking</b></div>
         <p class="note" data-slot="persist-note"></p>
+        <button class="list-btn" data-go="storage">Storage: space, old exports, unused clips</button>
+      </div>
+
+      <div class="card">
+        <p class="label">Your data</p>
+        <p class="note">A backup is a small file with your projects, templates and Settings. It never includes your clips, your AI key or your chibi.</p>
+        <div class="row">
+          <button class="btn btn-main" data-act="backup">Back up</button>
+          <button class="btn btn-ghost" data-act="restore">Restore</button>
+        </div>
       </div>
 
       <div class="card">
@@ -323,6 +334,60 @@
         <div class="kv"><span>Version</span><b data-slot="version"></b></div>
         <button class="list-btn" data-go="debug">Debug</button>
         <button class="list-btn" data-go="icons">App icon maker</button>
+      </div>
+    </section>
+  </template>
+
+  <!-- Storage (Prompt 5) -->
+  <template id="tpl-storage">
+    <section>
+      <header class="screen-head">
+        <p class="label">Your space</p>
+        <h1>Storage</h1>
+      </header>
+      <div class="card">
+        <div class="kv"><span>Used by Cake Walk</span><b data-slot="used">Checking</b></div>
+        <div class="kv"><span>Free for Cake Walk</span><b data-slot="free">Checking</b></div>
+      </div>
+      <div class="card">
+        <p class="label">Projects</p>
+        <div data-slot="projects"></div>
+      </div>
+      <div class="card">
+        <p class="label">Old exports</p>
+        <p class="note">Copies you shared or saved live on in Photos or Files, so these are safe to clear.</p>
+        <div data-slot="exports"></div>
+      </div>
+      <div class="card">
+        <p class="label">Unused clips</p>
+        <div data-slot="unused"></div>
+      </div>
+      <div class="card tip-card">
+        <p class="label">Tip</p>
+        <ul class="tips">
+          <li>Keep at least 20 GB free on your iPhone. Exports need room to breathe.</li>
+          <li>Use iCloud Photos? Turn on Settings, Photos, Download and Keep Originals, so your clips are full quality on the phone.</li>
+          <li>For clips meant for Cake Walk, shoot HEVC at 4K30 or 4K60. ProRes and Log don't work well here.</li>
+        </ul>
+      </div>
+    </section>
+  </template>
+
+  <!-- Recovery (Prompt 5) -->
+  <template id="tpl-recovery">
+    <section>
+      <header class="screen-head">
+        <p class="label">Recovery</p>
+        <h1 data-slot="name"></h1>
+      </header>
+      <div class="card">
+        <p data-slot="text"></p>
+        <div class="sheet-list">
+          <button class="list-btn" data-rec="safe">Open it with effects off</button>
+          <button class="list-btn" data-rec="data">Export its data (a small file for Claude)</button>
+          <button class="list-btn" data-rec="delete">Delete it</button>
+          <button class="list-btn" data-rec="home">Back to Home</button>
+        </div>
       </div>
     </section>
   </template>

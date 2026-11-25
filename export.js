@@ -3,7 +3,7 @@
 // The Worker writes each MP4 straight into OPFS (fast start, space reserved up front). Nothing holds the whole video in memory.
 
 import { CONFIG } from './config.js';
-import { PROJECTS, OPFS, WORKER, STORAGE } from './storage.js';
+import { PROJECTS, OPFS, WORKER, STORAGE, SAVE } from './storage.js';
 import { DEBUG } from './debug.js';
 import { layout, totalLength, fmtBytes } from './editor.js';
 import { PLATFORMS, PLATFORM_KEYS, exportRows, groupRows, storyRanges, specCheck, sourceLimits, fmtLen } from './platforms.js';
@@ -28,6 +28,12 @@ let fpsChoice = 30;
 let caps = null;
 
 function settings() { return ui?.settings || {}; }
+
+// Export choices save through the shared save system (Prompt 5), within a second.
+function saveProject() {
+  const p = project;
+  if (p) SAVE.queue(`project:${p.id}`, () => PROJECTS.save(p), 400);
+}
 
 function rows(max) {
   return exportRows({
@@ -59,7 +65,8 @@ function onVisible() { if (job && !document.hidden) requestWake(); }
 export const EXPORT = {
   get running() { return !!job; },
 
-  async render(container, uiApi, projectId) {
+  // opts.autostart: Restart after the app closed mid-export (Prompt 5) starts right away with the saved picks.
+  async render(container, uiApi, projectId, opts = {}) {
     ui = uiApi;
     project = projectId ? await PROJECTS.get(projectId) : null;
     container.innerHTML = '';
@@ -72,20 +79,22 @@ export const EXPORT = {
     $('[data-slot="name"]', root).textContent = project.name;
     const cap = $('[data-slot="caption"]', root);
     cap.value = project.caption || '';
-    let capTimer = null;
-    cap.addEventListener('input', () => {
-      clearTimeout(capTimer);
-      capTimer = setTimeout(async () => { project.caption = cap.value; await PROJECTS.save(project); }, 400);
-    });
-    $('[data-slot="max"]', root).addEventListener('change', renderFormats);
+    cap.addEventListener('input', () => { project.caption = cap.value; saveProject(); });
+    const maxBox = $('[data-slot="max"]', root);
+    maxBox.checked = !!project.exportMax;
+    maxBox.addEventListener('change', () => { project.exportMax = maxBox.checked; saveProject(); renderFormats(); });
+    if (project.exportFps === 60 || project.exportFps === 30) fpsChoice = project.exportFps;
     root.addEventListener('click', onClick);
     caps = await DEBUG.getCaps().catch(() => null);
     renderFps();
     renderFormats();
-    if (job) showRunning(); else if (finished.length && finished.projectId === project.id) showDone();
+    if (job) showRunning();
+    else if (opts.autostart) start();
+    else if (finished.length && finished.projectId === project.id) showDone();
   },
 
-  // On launch: if the app closed during an export, delete the half-written files. (Prompt 5 adds the Restart offer.)
+  // On launch: if the app closed during an export, delete the half-written files and return what was running,
+  // so the app can ask "Restart it?" (Prompt 5).
   async cleanupInterrupted() {
     try {
       const rec = await STORAGE.get('meta', 'exportRunning');
@@ -109,7 +118,7 @@ function renderFps() {
     b.className = `chip${fpsChoice === f ? ' on' : ''}`;
     b.textContent = `${f} fps`;
     b.disabled = f === 60 && !can60;
-    b.addEventListener('click', () => { fpsChoice = f; renderFps(); renderFormats(); });
+    b.addEventListener('click', () => { fpsChoice = f; project.exportFps = f; saveProject(); renderFps(); renderFormats(); });
     box.appendChild(b);
   }
   if (!can60) {
@@ -157,7 +166,7 @@ function renderFormats() {
         : ` ${r.width} x ${r.height} · ${r.fps} fps · ${r.bitrate / 1e6} Mbps${r.parts > 1 ? ` · ${r.parts} parts` : ''}${r.upscaleAvoided ? ' · sized to your clips (no upscaling)' : ''}${r.ratio !== '9:16' ? ` · your 9:16 edit is center-cropped to fill ${r.ratio}` : ''}`;
       input.addEventListener('change', () => {
         project.exportPicks = [...box.querySelectorAll('input:checked')].map((i) => i.value);
-        PROJECTS.save(project).catch(() => {});
+        saveProject();
         renderEstimate();
       });
       box.appendChild(row);
@@ -225,11 +234,20 @@ function share(files) {
     ui.toast('This browser can\'t share files. Open Cake Walk from its Home Screen icon.');
     return;
   }
-  navigator.share({ files }).catch((err) => {
+  navigator.share({ files }).then(() => markShared(files.map((f) => f.name))).catch((err) => {
     if (err.name === 'AbortError') return;
     DEBUG.log('warn', `Share: ${err.name} ${err.message}`, 'export');
     ui.toast('Tap Share again. Your caption is already copied.');
   });
+}
+
+// Storage suggests deleting exports you've already shared (Prompt 5).
+async function markShared(names) {
+  try {
+    const list = new Set((await STORAGE.get('meta', 'exportsShared')) || []);
+    names.forEach((n) => list.add(n));
+    await STORAGE.put('meta', [...list].slice(-500), 'exportsShared');
+  } catch {}
 }
 
 async function onClick(e) {
@@ -254,7 +272,8 @@ async function cancel() {
 async function start() {
   if (job) return;
   project.caption = $('[data-slot="caption"]', root).value;
-  await PROJECTS.save(project);
+  project.exportFps = fpsChoice;
+  await SAVE.now(`project:${project.id}`, () => PROJECTS.save(project));
   const groups = groupRows(selectedRows());
   if (!groups.length) { ui.toast('Pick at least one format.'); return; }
   const total = totalLength(project);
@@ -300,7 +319,7 @@ async function start() {
   job = { id: crypto.randomUUID(), cancelled: false };
   finished = [];
   finished.projectId = project.id;
-  await STORAGE.put('meta', { projectId: project.id, paths: jobs.map((j) => j.path), at: Date.now() }, 'exportRunning');
+  await STORAGE.put('meta', { projectId: project.id, paths: jobs.map((j) => j.path), fps: fpsChoice, at: Date.now() }, 'exportRunning');
   await requestWake();
   document.addEventListener('visibilitychange', onVisible);
   showRunning();
