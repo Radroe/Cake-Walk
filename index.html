@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en" data-theme="bone">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Cake Walk</title>
+  <meta name="description" content="Pro video editing for TikTok, Instagram and YouTube, right on your iPhone.">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Cake Walk">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <!-- Updated by app.js when the theme changes. // VERIFY the status bar looks right on the Night theme. -->
+  <meta name="theme-color" content="#F4EFE8">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="apple-touch-icon" sizes="180x180" href="./icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="stylesheet" href="./styles.css">
+  <script>
+    // Apply the saved theme before first paint, so Night never flashes white.
+    try {
+      var t = localStorage.getItem('cw-theme');
+      if (t) document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  </script>
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <div id="app">
+    <div id="top-slot"></div>
+    <main id="screen" class="screen" tabindex="-1" aria-live="polite"></main>
+    <nav class="tabbar" aria-label="Main">
+      <button class="tab" data-go="home" aria-label="Home"><span class="tab-dot"></span>Home</button>
+      <button class="tab" data-go="projects" aria-label="Projects"><span class="tab-dot"></span>Projects</button>
+      <button class="tab" data-go="settings" aria-label="Settings"><span class="tab-dot"></span>Settings</button>
+    </nav>
+    <div id="sheet-root"></div>
+    <div id="toast-root" aria-live="polite"></div>
+  </div>
+
+  <noscript>Cake Walk needs JavaScript turned on.</noscript>
+
+  <!-- ================= SCREEN LAYOUTS ================= -->
+
+  <!-- Install banner (shown only when opened in the browser, not from the Home Screen icon) -->
+  <template id="tpl-install">
+    <section class="install card">
+      <div class="install-head">
+        <div class="mascot-sm" data-slot="sprinkle"></div>
+        <div>
+          <p class="label">Install Cake Walk</p>
+          <h2>Put me on your Home Screen</h2>
+        </div>
+      </div>
+      <div class="install-steps" data-slot="chrome">
+        <p class="label">In Chrome</p>
+        <ol>
+          <li>Tap the <b>Share</b> button in the address bar.</li>
+          <li>Tap <b>Add to Home Screen</b>.</li>
+          <li>If you see <b>Open as Web App</b>, keep it on.</li>
+          <li>Tap <b>Add</b>.</li>
+        </ol>
+      </div>
+      <details class="install-steps" data-slot="safari">
+        <summary class="label">Backup: in Safari</summary>
+        <ol>
+          <li>Tap the <b>Share</b> button (the square with an arrow).</li>
+          <li>Scroll down and tap <b>Add to Home Screen</b>.</li>
+          <li>If you see <b>Open as Web App</b>, keep it on.</li>
+          <li>Tap <b>Add</b>.</li>
+        </ol>
+      </details>
+      <p class="note">Always open Cake Walk from its icon, because the Home Screen app keeps its own storage, separate from both Chrome and Safari.</p>
+      <div class="row">
+        <button class="btn btn-ghost" data-act="icons">Make app icons</button>
+        <button class="btn btn-ghost" data-act="hide-install">Hide for now</button>
+      </div>
+    </section>
+  </template>
+
+  <!-- Capability warning (shown when a must-have feature is missing) -->
+  <template id="tpl-capwarn">
+    <section class="card warn-card">
+      <p class="label">Heads up</p>
+      <p data-slot="text"></p>
+    </section>
+  </template>
+
+  <!-- Home (Simple mode) -->
+  <template id="tpl-home">
+    <section class="home">
+      <header class="greet">
+        <div class="mascot" data-slot="sprinkle"></div>
+        <div class="bubble">
+          <p class="label" data-slot="sprinkle-name">Sprinkle</p>
+          <h1 data-slot="greeting">Hey gorgeous.</h1>
+          <p class="muted" data-slot="sub">Ready to serve?</p>
+        </div>
+      </header>
+      <div data-slot="warnings"></div>
+      <article class="card today">
+        <div class="today-top">
+          <p class="label">Today</p>
+          <span class="pill pill-green" data-slot="streak">0-day streak</span>
+        </div>
+        <h2 data-slot="challenge">A walk video in flats.</h2>
+        <p class="muted" data-slot="challenge-size">Quick, about 15 minutes</p>
+        <div class="row">
+          <button class="btn btn-ghost" data-act="soon" data-feature="Daily challenges">Swap</button>
+          <button class="btn btn-ghost" data-act="soon" data-feature="Daily challenges">Done</button>
+        </div>
+      </article>
+      <div class="grid4">
+        <button class="big big-main" data-act="new-video"><span class="big-icon">＋</span>New video</button>
+        <button class="big" data-act="soon" data-feature="Templates"><span class="big-icon">▦</span>Templates</button>
+        <button class="big" data-act="soon" data-feature="Ask Sprinkle"><span class="big-icon">✦</span>Ask Sprinkle</button>
+        <button class="big" data-act="soon" data-feature="My plan"><span class="big-icon">☰</span>My plan</button>
+      </div>
+      <button class="btn btn-ghost wide" data-act="more">More tools</button>
+    </section>
+  </template>
+
+  <!-- More tools sheet -->
+  <template id="tpl-more">
+    <div class="sheet-list">
+      <button class="list-btn" data-act="soon" data-feature="Remix">Remix a video I like</button>
+      <button class="list-btn" data-act="soon" data-feature="Storage">Storage</button>
+      <button class="list-btn" data-act="soon" data-feature="Caption helper">Caption helper</button>
+      <button class="list-btn" data-act="soon" data-feature="Agency kit">Agency kit</button>
+      <button class="list-btn" data-act="soon" data-feature="KPI log">KPI log</button>
+      <button class="list-btn" data-act="soon" data-feature="Socials hub">Socials hub</button>
+      <button class="list-btn" data-act="soon" data-feature="Collaborator book">Collaborator book</button>
+      <button class="list-btn" data-go="icons">App icon maker</button>
+      <button class="list-btn" data-go="debug">Debug</button>
+    </div>
+  </template>
+
+  <!-- Projects -->
+  <template id="tpl-projects">
+    <section>
+      <header class="screen-head">
+        <p class="label">Your work</p>
+        <h1>Projects</h1>
+      </header>
+      <div data-slot="list" class="stack"></div>
+    </section>
+  </template>
+
+  <!-- Empty state -->
+  <template id="tpl-empty">
+    <div class="empty">
+      <div class="mascot" data-slot="sprinkle"></div>
+      <h2 data-slot="title">Nothing here yet.</h2>
+      <p class="muted" data-slot="text"></p>
+    </div>
+  </template>
+
+  <!-- Editor (placeholder until Prompt 2) -->
+  <template id="tpl-editor">
+    <section>
+      <header class="screen-head">
+        <p class="label">Editor</p>
+        <h1>New video</h1>
+      </header>
+      <div data-slot="body"></div>
+    </section>
+  </template>
+
+  <!-- Settings -->
+  <template id="tpl-settings">
+    <section>
+      <header class="screen-head">
+        <p class="label">Only on this phone</p>
+        <h1>Settings</h1>
+      </header>
+      <div class="card settings-hero">
+        <div class="mascot-sm" data-slot="sprinkle"></div>
+        <p class="muted">Everything you type here stays on this iPhone. It's never in the code, the public site or the Debug log.</p>
+      </div>
+
+      <div class="card">
+        <p class="label">About you</p>
+        <label class="field"><span>Name</span><input data-key="name" autocomplete="off" autocapitalize="words"></label>
+        <label class="field"><span>Height</span><input data-key="height" autocomplete="off" placeholder="5'9&quot;"></label>
+        <label class="field"><span>City</span><input data-key="city" autocomplete="off" autocapitalize="words"></label>
+        <label class="field"><span>PRO account handle</span><input data-key="proHandle" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="@"></label>
+        <label class="field"><span>CREATIVE account handle</span><input data-key="creativeHandle" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="@"></label>
+        <label class="field"><span>Email</span><input data-key="email" type="email" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+      </div>
+
+      <div class="card">
+        <p class="label">Look</p>
+        <div class="themes" data-slot="themes"></div>
+        <label class="field"><span>Mascot's name</span><input data-key="sprinkleName" autocomplete="off" placeholder="Sprinkle"></label>
+      </div>
+
+      <div class="card">
+        <p class="label">Storage</p>
+        <div class="kv"><span>Protected storage</span><b data-slot="persist">Checking</b></div>
+        <p class="note" data-slot="persist-note"></p>
+      </div>
+
+      <div class="card">
+        <p class="label">App</p>
+        <div class="kv"><span>Version</span><b data-slot="version"></b></div>
+        <button class="list-btn" data-go="debug">Debug</button>
+        <button class="list-btn" data-go="icons">App icon maker</button>
+      </div>
+    </section>
+  </template>
+
+  <!-- Debug -->
+  <template id="tpl-debug">
+    <section>
+      <header class="screen-head">
+        <p class="label">For Claude</p>
+        <h1>Debug</h1>
+      </header>
+      <div class="card">
+        <div class="kv"><span>App version</span><b data-slot="version"></b></div>
+        <div class="kv"><span>Mediabunny</span><b data-slot="mb"></b></div>
+        <div class="kv"><span>Opened as</span><b data-slot="mode"></b></div>
+        <div class="kv"><span>Space used</span><b data-slot="used"></b></div>
+        <div class="kv"><span>Space free</span><b data-slot="free"></b></div>
+        <div class="kv"><span>Protected storage</span><b data-slot="persist"></b></div>
+        <p class="note">The Home Screen app and the browser keep separate storage.</p>
+      </div>
+      <div class="card">
+        <div class="today-top">
+          <p class="label">Capability checks</p>
+          <span class="muted small" data-slot="checked"></span>
+        </div>
+        <div data-slot="caps" class="caps"></div>
+      </div>
+      <div class="row">
+        <button class="btn btn-main" data-act="copy-log">Copy</button>
+        <button class="btn btn-ghost" data-act="recheck">Check again</button>
+      </div>
+      <div class="card">
+        <div class="today-top">
+          <p class="label">Error log</p>
+          <button class="btn-text" data-act="clear-log">Clear</button>
+        </div>
+        <div data-slot="log" class="log"></div>
+      </div>
+      <button class="btn btn-ghost wide" data-go="icons">App icon maker</button>
+    </section>
+  </template>
+
+  <!-- Icon generator -->
+  <template id="tpl-icons">
+    <section>
+      <header class="screen-head">
+        <p class="label">Do this before Add to Home Screen</p>
+        <h1>App icon maker</h1>
+      </header>
+      <div class="card icon-card">
+        <div class="icon-preview" data-slot="preview"></div>
+        <p class="muted">Makes icon.png (180), icon-192.png and icon-512.png. Save them to Files, then upload all three to your GitHub repository.</p>
+      </div>
+      <div data-slot="thumbs" class="thumbs"></div>
+      <button class="btn btn-main wide" data-act="make-icons">Make my icons</button>
+      <button class="btn btn-ghost wide hidden" data-act="save-icons">Save to Files</button>
+      <div data-slot="links" class="stack small"></div>
+    </section>
+  </template>
+</body>
+</html>
