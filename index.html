@@ -23,6 +23,26 @@
       if (t) document.documentElement.setAttribute('data-theme', t);
     } catch (e) {}
   </script>
+  <script>
+    // Boot guard (Prompt 6): if a broken or half-uploaded build stops the app from starting, the normal
+    // "New version ready" offer can't appear. After 8 seconds, offer to fetch the newest files instead.
+    // It clears only the app's cached files; projects, clips and Settings are kept.
+    setTimeout(function () {
+      if (window.__cakeWalkStarted) return;
+      var box = document.createElement('div');
+      box.setAttribute('role', 'alert');
+      box.style.cssText = 'position:fixed;left:16px;right:16px;bottom:40px;z-index:99;padding:16px;border-radius:18px;background:#fff;color:#141214;box-shadow:0 10px 30px rgba(0,0,0,.25);font:16px -apple-system,sans-serif';
+      box.innerHTML = '<b>Cake Walk didn\'t start.</b><p style="margin:6px 0 12px">Load the newest version? Your projects and clips stay.</p><button style="min-height:44px;width:100%;border:0;border-radius:14px;background:#FF2D95;color:#141214;font-weight:700;font-size:16px">Load newest version</button>';
+      box.querySelector('button').onclick = function () {
+        var done = function () { location.reload(); };
+        var jobs = [];
+        if ('caches' in window) jobs.push(caches.keys().then(function (k) { return Promise.all(k.filter(function (n) { return n.indexOf('cakewalk-') === 0; }).map(function (n) { return caches.delete(n); })); }));
+        if (navigator.serviceWorker) jobs.push(navigator.serviceWorker.getRegistrations().then(function (r) { return Promise.all(r.map(function (x) { return x.unregister(); })); }));
+        Promise.all(jobs).then(done, done);
+      };
+      document.body.appendChild(box);
+    }, 8000);
+  </script>
   <script type="module" src="./app.js"></script>
 </head>
 <body>
@@ -198,6 +218,10 @@
           <button data-act="ed-right" aria-label="Move right">▶</button>
           <button data-act="ed-info">Info</button>
           <button data-act="ed-del" class="danger">Delete</button>
+        </div>
+        <div class="dock hidden" data-slot="dock">
+          <div class="dock-head"><b data-slot="dock-title"></b><button class="btn btn-main btn-sm" data-act="ed-dock-done">Done</button></div>
+          <div class="dock-body" data-slot="dock-body"></div>
         </div>
       </div>
 

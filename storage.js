@@ -23,7 +23,9 @@ const MIGRATIONS = [
   // 2 -> 3: each project's undo history (last 200 steps), keyed by project id
   (db) => {
     db.createObjectStore('undo');                           // projectId -> { undo: [...], redo: [...] }
-  }
+  },
+  // 3 -> 4: no new stores (Prompt 6 adds look data inside each project record)
+  () => {}
 ];
 
 // Step-by-step upgrades for the project records themselves. Entry n upgrades a project from schema n to n + 1.
@@ -32,7 +34,10 @@ const PROJECT_MIGRATIONS = {
   // 1 -> 2: the timeline arrived (Prompt 2)
   1: (p) => { p.assets ||= {}; p.clips ||= []; p.music ??= null; p.caption ??= ''; },
   // 2 -> 3: target platform (Prompt 4) and last-opened time (Prompt 5)
-  2: (p) => { p.platform ||= 'tiktok'; p.exportPicks ??= null; p.openedAt ||= p.updatedAt || p.createdAt || Date.now(); }
+  2: (p) => { p.platform ||= 'tiktok'; p.exportPicks ??= null; p.openedAt ||= p.updatedAt || p.createdAt || Date.now(); },
+  // 3 -> 4: the look (Prompt 6): text overlays, stickers, the project grade and the preview ratio.
+  // Per-clip color, framing and transition are added to a clip only when you set them (missing means natural, fill, cut).
+  3: (p) => { p.texts ||= []; p.stickers ||= []; p.grade ||= 'natural'; p.viewRatio ||= '9:16'; p.lane = p.lane === 'CREATIVE' ? 'CREATIVE' : 'PRO'; }
 };
 
 export function upgradeProject(p) {
@@ -138,12 +143,16 @@ export const PROJECTS = {
       createdAt: now,
       updatedAt: now,
       assets: {},     // assetId -> what was imported (file path in OPFS, size, codec, length)
-      clips: [],      // the timeline, in order: { id, assetId, in, out, speed, volume, muted }
+      clips: [],      // the timeline, in order: { id, assetId, in, out, speed, volume, muted, color?, frame?, transition? }
       music: null,    // { assetId, volume, fadeIn, fadeOut }
       caption: '',
       platform: 'tiktok',
       exportPicks: null,
-      openedAt: now
+      openedAt: now,
+      texts: [],      // text overlays (Prompt 6): { id, text, font, color, style, outline, shadow, x, y, size, start, end }
+      stickers: [],   // CREATIVE stickers: { id, kind, x, y, size, rot, start, end }
+      grade: 'natural',
+      viewRatio: '9:16'
     };
     await STORAGE.put('projects', project);
     return project;

@@ -1,16 +1,14 @@
-// Cake Walk: EDITOR and PLAYER
-// Import, timeline (trim, split, speed, volume, reorder, undo), music and the preview.
+// Cake Walk: EDITOR
+// Import, timeline (trim, split, speed, volume, reorder, undo) and music. The preview is in player.js and the
+// style tools (text, color, transitions, reframe, stickers, safe zones, dual cut) are in style.js (Prompt 6).
 // Clip bytes live in OPFS (copied in by the Worker). The project record in IndexedDB holds only the edit.
-//
-// Preview note (draft build): the preview plays the original clips with the iPhone's own video player,
-// framed exactly like the export (center fill, 9:16), so playback is smooth and in sync with sound.
-// The export draws every frame in the Worker. // VERIFY on iPhone that preview and export framing match.
 
 import { CONFIG } from './config.js';
 import { PROJECTS, OPFS, WORKER, THUMBS, SAVE, SESSION, UNDO } from './storage.js';
 import { checkClips, missingSheet } from './safety.js';
 import { DEBUG } from './debug.js';
 import { renderGuard, timelineGuides, trimProjectTo, platformSheet, fmtLen } from './platforms.js';
+import { STYLE, STYLE_PANELS, dualCut } from './style.js';
 
 const E = CONFIG.EDITOR;
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -24,18 +22,9 @@ export const fmt = (s) => {
 };
 export const fmtBytes = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round((n || 0) / 1e3)} KB`);
 
-// ---------- Timeline math (shared with export.js) ----------
-
-export function clipLen(c) { return (c.out - c.in) / c.speed; }
-export function layout(project) {
-  let t = 0;
-  return project.clips.map((clip) => {
-    const seg = { clip, asset: project.assets[clip.assetId], start: t, end: t + clipLen(clip) };
-    t = seg.end;
-    return seg;
-  });
-}
-export function totalLength(project) { return project.clips.reduce((a, c) => a + clipLen(c), 0); }
+// Timeline math lives in player.js (Prompt 6); export.js still imports it from here.
+import { clipLen, layout, totalLength, PLAYER } from './player.js';
+export { clipLen, layout, totalLength, PLAYER };
 
 // ---------- State ----------
 
@@ -44,12 +33,10 @@ let project = null;
 let root = null;
 let t = 0;                 // playhead, in timeline seconds
 let selected = null;       // clip id
-let missingWarned = false;
 let safeMode = false;      // Recovery: open with effects and filmstrips off
 let px = E.PX_PER_SEC;     // timeline zoom
 const undoStack = [];
 const redoStack = [];
-const urls = new Map();    // assetId -> object URL
 const thumbs = new Map();  // assetId -> [object URL]
 let importAbort = null;
 
@@ -82,7 +69,7 @@ async function openPanel(name, fn) {
   try { return await fn(); } finally { panel = null; noteSession(); }
 }
 
-function snapshot() { return JSON.stringify({ clips: project.clips, music: project.music }); }
+function snapshot() { return JSON.stringify({ clips: project.clips, music: project.music, texts: project.texts, stickers: project.stickers, grade: project.grade }); }
 function remember() {
   undoStack.push(snapshot());
   if (undoStack.length > E.UNDO_LIMIT) undoStack.shift();
@@ -93,8 +80,12 @@ function restore(json) {
   const s = JSON.parse(json);
   project.clips = s.clips;
   project.music = s.music;
+  if (s.texts) project.texts = s.texts;
+  if (s.stickers) project.stickers = s.stickers;
+  if (s.grade) project.grade = s.grade;
   if (!project.clips.some((c) => c.id === selected)) selected = null;
   changed();
+  STYLE.refresh();
 }
 function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); restore(undoStack.pop()); UNDO.save(project.id, undoStack, redoStack); }
 function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); restore(redoStack.pop()); UNDO.save(project.id, undoStack, redoStack); }
@@ -106,226 +97,6 @@ function changed() {
   renderSelection();
   renderLengthGuard();
   PLAYER.seek(t);
-}
-
-// ---------- PLAYER ----------
-
-async function assetUrl(assetId) {
-  if (urls.has(assetId)) return urls.get(assetId);
-  const asset = project.assets[assetId];
-  const file = await OPFS.file(asset.path);
-  const url = URL.createObjectURL(file);
-  urls.set(assetId, url);
-  return url;
-}
-
-export const PLAYER = {
-  ready: false,
-  playing: false,
-  els: null,        // { a, b, img, music }
-  active: null,     // the <video> showing now
-  seg: null,
-  raf: 0,
-  actx: null,
-  gains: new Map(),
-  clockStart: 0,
-  clockT: 0,
-
-  mount(stage) {
-    const mk = () => {
-      const v = document.createElement('video');
-      v.playsInline = true;
-      v.setAttribute('playsinline', '');
-      v.preload = 'auto';
-      v.muted = true;
-      v.className = 'pv hidden';
-      stage.appendChild(v);
-      return v;
-    };
-    const img = document.createElement('img');
-    img.className = 'pv hidden';
-    img.alt = '';
-    stage.appendChild(img);
-    const music = document.createElement('audio');
-    music.preload = 'auto';
-    this.els = { a: mk(), b: mk(), img, music };
-    this.active = this.els.a;
-    this.ready = true;
-  },
-
-  unmount() {
-    this.pause();
-    if (this.els) for (const el of [this.els.a, this.els.b, this.els.music]) { el.pause(); el.removeAttribute('src'); el.load(); }
-    this.els = null;
-    this.ready = false;
-    this.gains.clear();
-    if (this.actx) { this.actx.close?.().catch?.(() => {}); this.actx = null; }
-  },
-
-  // Route sound through Web Audio, so per-clip volume works on iPhone (it ignores element volume).
-  audioGraph() {
-    if (this.actx || !this.els) return;
-    try {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      this.actx = new Ctx();
-      for (const key of ['a', 'b', 'music']) {
-        const g = this.actx.createGain();
-        this.actx.createMediaElementSource(this.els[key]).connect(g).connect(this.actx.destination);
-        this.gains.set(this.els[key], g);
-      }
-    } catch (err) {
-      DEBUG.log('warn', `Preview sound mixer unavailable: ${err.message}`, 'player');
-    }
-  },
-  setGain(el, v) {
-    const g = this.gains.get(el);
-    if (g) g.gain.value = v;
-    else el.volume = Math.max(0, Math.min(1, v));
-  },
-
-  segAt(time) {
-    const segs = layout(project);
-    if (!segs.length) return null;
-    return segs.find((s) => time < s.end - 1e-6) || segs[segs.length - 1];
-  },
-
-  async show(seg, time, { play = false } = {}) {
-    if (!this.els) return;
-    const { a, b, img } = this.els;
-    this.seg = seg;
-    if (!seg) { [a, b, img].forEach((x) => x.classList.add('hidden')); return; }
-    let src;
-    try { src = await assetUrl(seg.clip.assetId); }
-    catch (err) {
-      DEBUG.log('error', `Preview: clip file missing (${err.name})`, 'preview');
-      if (!missingWarned) { missingWarned = true; ui?.toast('One clip\'s file is missing from Cake Walk. Delete it and import it again.'); }
-      return;
-    }
-    if (!this.els) return;
-    if (seg.asset.kind === 'photo') {
-      if (img.getAttribute('src') !== src) img.src = src;
-      img.classList.remove('hidden');
-      a.classList.add('hidden'); b.classList.add('hidden');
-      a.pause(); b.pause();
-      return;
-    }
-    img.classList.add('hidden');
-    // Reuse the element that already holds this clip (preloaded), otherwise the free one.
-    let el = [a, b].find((x) => x.dataset.asset === seg.clip.assetId) || (this.active === a ? b : a);
-    if (el.dataset.asset !== seg.clip.assetId) { el.src = src; el.dataset.asset = seg.clip.assetId; }
-    const srcTime = seg.clip.in + (time - seg.start) * seg.clip.speed;
-    if (Math.abs(el.currentTime - srcTime) > 0.04) { try { el.currentTime = srcTime; } catch {} }
-    el.playbackRate = seg.clip.speed;
-    const silent = seg.clip.muted || seg.clip.speed !== 1;
-    el.muted = silent;
-    this.setGain(el, silent ? 0 : seg.clip.volume);
-    el.classList.remove('hidden');
-    const other = el === a ? b : a;
-    other.classList.add('hidden');
-    other.pause();
-    this.active = el;
-    if (play) el.play().catch(() => {});
-  },
-
-  // Prepare the next clip in the hidden element so the cut is clean.
-  async preload(next) {
-    if (!next || next.asset.kind === 'photo' || !this.els) return;
-    const { a, b } = this.els;
-    const el = this.active === a ? b : a;
-    const src = await assetUrl(next.clip.assetId);
-    if (el.dataset.asset !== next.clip.assetId) { el.src = src; el.dataset.asset = next.clip.assetId; }
-    try { el.currentTime = next.clip.in; } catch {}
-  },
-
-  seek(time) {
-    if (!project || !this.els) return;
-    t = Math.max(0, Math.min(time, totalLength(project)));
-    this.show(this.segAt(t), t);
-    this.syncMusic(false);
-    renderClock();
-    if (!this.playing) noteSession();
-  },
-
-  syncMusic(play) {
-    const m = project?.music;
-    const el = this.els?.music;
-    if (!el) return;
-    if (!m) { el.pause(); return; }
-    const asset = project.assets[m.assetId];
-    if (!asset) return;
-    assetUrl(m.assetId).then((src) => {
-      if (!this.els) return;
-      if (el.dataset.asset !== m.assetId) { el.src = src; el.dataset.asset = m.assetId; }
-      const want = Math.min(t, asset.duration);
-      if (Math.abs(el.currentTime - want) > 0.15) { try { el.currentTime = want; } catch {} }
-      this.setGain(el, musicGain(m, t, Math.min(totalLength(project), asset.duration)));
-      if (play && t < asset.duration) el.play().catch(() => {}); else if (!play) el.pause();
-    });
-  },
-
-  async play() {
-    if (!project?.clips.length || this.playing) return;
-    this.audioGraph();
-    this.actx?.resume?.();
-    if (t >= totalLength(project) - 0.05) t = 0;
-    this.playing = true;
-    renderPlayButton();
-    await this.show(this.segAt(t), t, { play: true });
-    this.syncMusic(true);
-    this.clockStart = performance.now();
-    this.clockT = t;
-    let preloaded = null;
-    const tick = () => {
-      if (!this.playing) return;
-      const seg = this.seg;
-      const total = totalLength(project);
-      if (!seg) { this.pause(); return; }
-      if (seg.asset.kind === 'photo') {
-        t = this.clockT + (performance.now() - this.clockStart) / 1000;
-      } else {
-        t = seg.start + (this.active.currentTime - seg.clip.in) / seg.clip.speed;
-      }
-      const segs = layout(project);
-      const idx = segs.findIndex((s) => s.clip.id === seg.clip.id);
-      const next = segs[idx + 1];
-      if (next && preloaded !== next.clip.id && seg.end - t < 1.5) { preloaded = next.clip.id; this.preload(next); }
-      const ended = seg.asset.kind !== 'photo' && (this.active.ended || this.active.currentTime >= seg.clip.out - 0.02);
-      if (t >= seg.end - 0.01 || ended) {
-        if (!next) { t = total; this.pause(); this.seek(total); return; }
-        t = next.start;
-        this.clockStart = performance.now();
-        this.clockT = t;
-        this.show(next, t, { play: true });
-      }
-      const m = project.music;
-      if (m && project.assets[m.assetId]) {
-        const dur = project.assets[m.assetId].duration;
-        this.setGain(this.els.music, musicGain(m, t, Math.min(total, dur)));
-        if (t >= dur) this.els.music.pause();
-      }
-      renderClock();
-      followPlayhead();
-      this.raf = requestAnimationFrame(tick);
-    };
-    this.raf = requestAnimationFrame(tick);
-  },
-
-  pause() {
-    this.playing = false;
-    cancelAnimationFrame(this.raf);
-    if (this.els) { this.els.a.pause(); this.els.b.pause(); this.els.music.pause(); }
-    renderPlayButton();
-    noteSession();
-  },
-
-  toggle() { this.playing ? this.pause() : this.play(); }
-};
-
-function musicGain(m, time, end) {
-  let g = m.volume ?? 1;
-  if (m.fadeIn > 0 && time < m.fadeIn) g *= time / m.fadeIn;
-  if (m.fadeOut > 0 && time > end - m.fadeOut) g *= Math.max(0, (end - time) / m.fadeOut);
-  return Math.max(0, g);
 }
 
 // ---------- Import ----------
@@ -689,10 +460,13 @@ async function moreSheet() {
     ['Add clips (Photos)', () => pick({ accept: 'image/*,video/*' }).then((f) => importFiles(f, 'quick'))],
     ['Add clips (Files, original quality)', () => pick({}).then((f) => importFiles(f, 'files'))],
     ['Rename project', rename],
-    ['Color', () => ui.soon('Color tools')],
-    ['Transitions', () => ui.soon('Transitions')],
-    ['Reframe', () => ui.soon('Reframe')],
-    ['Stickers', () => ui.soon('Stickers')],
+    ['Text', () => STYLE.show('text')],
+    ['Color', () => STYLE.show('color')],
+    ['Transitions', () => STYLE.show('transition')],
+    ['Reframe', () => STYLE.show('reframe')],
+    ['Stickers', () => STYLE.show('stickers')],
+    ['Safe zones', () => STYLE.show('guides')],
+    [`Dual cut (make a ${project.lane === 'PRO' ? 'CREATIVE' : 'PRO'} version)`, () => dualCut(ui, project, (id) => ui.go('editor', { id }))],
     ['Remix timing', () => ui.soon('Remix')]
   ];
   let chosen = null;
@@ -742,6 +516,7 @@ function renderSelection() {
   if (!root) return;
   noteSession();
   const c = selClip();
+  if (['color', 'transition', 'reframe'].includes(STYLE.open)) STYLE.refresh();
   $('[data-slot="clipbar"]', root).classList.toggle('hidden', !c);
   const meta = $('[data-slot="meta"]', root);
   if (!c) { meta.textContent = project.clips.length ? 'Tap a clip to edit it.' : ''; return; }
@@ -977,6 +752,48 @@ function zoomTo(v) {
   renderTimeline();
 }
 
+// ---------- Connections to the preview (player.js) and the style tools (style.js) ----------
+
+function onResize() { renderTimeline(); PLAYER.fit(); }
+
+const playerHost = {
+  project: () => project,
+  time: () => t,
+  setTime: (v) => { t = v; },
+  clock: () => renderClock(),
+  follow: () => followPlayhead(),
+  playButton: () => renderPlayButton(),
+  note: () => noteSession(),
+  toast: (msg) => ui?.toast(msg),
+  view: () => STYLE.view(safeMode)
+};
+
+const styleApi = {
+  ui: null,
+  project: () => project,
+  root: () => root,
+  canvas: () => PLAYER.canvas,
+  time: () => t,
+  total: () => totalLength(project),
+  seek: (v) => PLAYER.seek(v),
+  play: () => PLAYER.play(),
+  pause: () => { if (PLAYER.playing) PLAYER.pause(); },
+  draw: () => PLAYER.draw(),
+  refit: () => requestAnimationFrame(() => { renderTimeline(); PLAYER.fit(); }),
+  view: () => STYLE.view(safeMode),
+  safe: () => safeMode,
+  clip: () => selClip() || clipAtPlayhead(),
+  segOf: (c) => layout(project).find((s) => s.clip.id === c.id) || null,
+  showSelected: () => {
+    const s = selClip() && layout(project).find((x) => x.clip.id === selected);
+    if (s && !(t >= s.start && t < s.end)) PLAYER.seek(s.start + Math.min(0.6, (s.end - s.start) / 2));
+  },
+  remember: () => remember(),
+  touch: () => { queueSave(); PLAYER.draw(); },
+  save: () => queueSave(),
+  setPanel: (name) => { panel = name; noteSession(); }
+};
+
 // ---------- EDITOR ----------
 
 export const EDITOR = {
@@ -986,6 +803,7 @@ export const EDITOR = {
   // opts.restore: the saved session (playhead, selection, open panel). opts.safe: open with effects and filmstrips off.
   async render(container, uiApi, projectId, opts = {}) {
     ui = uiApi;
+    styleApi.ui = uiApi;
     await this.close();
     project = projectId ? await PROJECTS.get(projectId) : null;
     container.innerHTML = '';
@@ -997,6 +815,9 @@ export const EDITOR = {
     project.clips ||= [];
     project.music ||= null;
     project.platform ||= 'tiktok';
+    project.texts ||= [];
+    project.stickers ||= [];
+    project.grade ||= 'natural';
     project.openedAt = Date.now();
     safeMode = !!opts.safe;
     const hist = await UNDO.load(project.id);
@@ -1007,26 +828,28 @@ export const EDITOR = {
     const r = opts.restore;
     selected = r?.selected && project.clips.some((c) => c.id === r.selected) ? r.selected : null;
     t = Math.min(r?.playhead ?? project.playhead ?? 0, totalLength(project));
-    missingWarned = false;
     root = document.getElementById('tpl-editor-body').content.firstElementChild.cloneNode(true);
     container.appendChild(root);
+    PLAYER.attach(playerHost);
+    STYLE.attach(styleApi);
     PLAYER.mount($('[data-slot="stage"]', root));
     root.addEventListener('click', onClick);
     bindTimeline();
     renderAll();
     if (!safeMode) Object.values(project.assets).forEach((a) => { if (a.kind !== 'audio') loadThumbs(a); });
-    window.addEventListener('resize', renderTimeline);
+    window.addEventListener('resize', onResize);
     queueSave();
     noteSession();
     // Every clip must be intact inside Cake Walk; the edit never depends on the camera roll.
     const opened = project;
     checkClips(project).then((missing) => {
-      if (missing.length && project === opened && root) missingSheet(ui, project, missing, () => { urls.clear(); thumbs.clear(); renderAll(); if (!safeMode) Object.values(project.assets).forEach((a) => { if (a.kind !== 'audio') loadThumbs(a); }); });
+      if (missing.length && project === opened && root) missingSheet(ui, project, missing, () => { PLAYER.clearUrls(); thumbs.clear(); renderAll(); if (!safeMode) Object.values(project.assets).forEach((a) => { if (a.kind !== 'audio') loadThumbs(a); }); });
     }).catch((err) => DEBUG.log('warn', `Clip check: ${err.message}`, 'editor'));
     if (r?.panel && !safeMode) {
       const fns = { speed: speedSheet, volume: volumeSheet, info: infoSheet, music: musicSheet, more: moreSheet };
       const needsClip = ['speed', 'volume', 'info'].includes(r.panel);
-      if (fns[r.panel] && (!needsClip || selClip()) && (r.panel !== 'music' || project.music)) setTimeout(() => openPanel(r.panel, fns[r.panel]), 350);
+      if (STYLE_PANELS.includes(r.panel)) setTimeout(() => STYLE.show(r.panel), 350);
+      else if (fns[r.panel] && (!needsClip || selClip()) && (r.panel !== 'music' || project.music)) setTimeout(() => openPanel(r.panel, fns[r.panel]), 350);
     }
   },
 
@@ -1034,12 +857,12 @@ export const EDITOR = {
     if (!project) return;
     project.playhead = t;
     await saveNow();
+    STYLE.close();
     PLAYER.unmount();
-    urls.forEach((u) => URL.revokeObjectURL(u));
-    urls.clear();
+    PLAYER.clearUrls();
     thumbs.forEach((list) => list.forEach((u) => URL.revokeObjectURL(u)));
     thumbs.clear();
-    window.removeEventListener('resize', renderTimeline);
+    window.removeEventListener('resize', onResize);
     root = null;
     project = null;
   },
@@ -1099,7 +922,8 @@ async function onClick(e) {
       else undoStack.pop();
       break;
     }
-    case 'ed-text': ui.soon('Text'); break;
+    case 'ed-text': STYLE.show('text'); break;
+    case 'ed-dock-done': STYLE.close(); break;
     case 'ed-template': ui.soon('Templates'); break;
     case 'ed-more': openPanel('more', moreSheet); break;
     case 'ed-zoom-in': zoomTo(px * 1.5); break;

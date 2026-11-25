@@ -720,6 +720,7 @@ async function start() {
   DEBUG.log('info', `Launched v${CONFIG.APP_VERSION} as ${DEBUG.displayMode()} in ${Math.round(performance.now() - t0)} ms`);
 
   setupServiceWorker();
+  window.__cakeWalkStarted = true;   // the boot guard in index.html checks this
 
   // Ask iOS to protect storage once, from the Home Screen app only.
   if (isStandalone()) {

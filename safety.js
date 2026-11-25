@@ -158,7 +158,7 @@ export async function deleteProject(id) {
   if (p) {
     const keep = await pathsInUse();
     for (const path of PROJECTS.paths(p)) if (!keep.has(path)) await OPFS.remove(path).catch(() => {});
-    for (const assetId of Object.keys(p.assets || {})) await THUMBS.remove(assetId).catch(() => {});
+    for (const [assetId, a] of Object.entries(p.assets || {})) if (!keep.has(a.path)) await THUMBS.remove(assetId).catch(() => {});
   }
   if ((await STORAGE.get('meta', 'lastProject').catch(() => null)) === id) await STORAGE.del('meta', 'lastProject').catch(() => {});
   await LOADS.ok();

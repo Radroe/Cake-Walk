@@ -3,6 +3,7 @@
 // Every message: { id, type, payload }. Every reply: { id, ok, result } or { id, ok: false, error }.
 
 import { CONFIG } from './config.js';
+import { colorFor, drawBase, transitionAt, composite, drawOverlays } from './look.js';
 
 const handlers = {};
 let mediabunny = null;
@@ -219,11 +220,6 @@ const RATE = 48000;
 
 handlers['export.cancel'] = async ({ job }) => { cancelled.add(job); return true; };
 
-function drawCover(ctx, src, sw, sh, W, H) {
-  const s = Math.max(W / sw, H / sh);
-  const dw = sw * s, dh = sh * s;
-  ctx.drawImage(src, (W - dw) / 2, (H - dh) / 2, dw, dh);
-}
 
 // Mix one source's sound into out[L,R] for timeline range [a, b).
 async function mixSource(src, a, b, out, frames) {
@@ -274,7 +270,7 @@ handlers['export.run'] = async (p) => {
   }
 };
 
-async function runExport({ job, clips, music, width: W, height: H, fps, bitrate, audioBitrate = 256000, outPath, keyFrameInterval = 0.5 }, codecString) {
+async function runExport({ job, clips, music, look = {}, width: W, height: H, fps, bitrate, audioBitrate = 256000, outPath, keyFrameInterval = 0.5 }, codecString) {
   const mb = await loadMediabunny();
   cancelled.delete(job);
   const segs = [];
@@ -349,6 +345,15 @@ async function runExport({ job, clips, music, width: W, height: H, fps, bitrate,
   const output = new mb.Output({ format: new mb.Mp4OutputFormat({ fastStart: 'reserve' }), target });
   const canvas = new OffscreenCanvas(W, H);
   const ctx = canvas.getContext('2d', { alpha: false });
+  // The look (Prompt 6), drawn with look.js exactly like the preview: each clip's picture layer goes on `base`,
+  // the last picture of the clip before is kept on `held` for transitions, then text and stickers go on top.
+  // offset: where this file starts on the full timeline (Story parts), so text and transitions keep their times.
+  const base = new OffscreenCanvas(W, H);
+  const bctx = base.getContext('2d', { alpha: false });
+  const held = new OffscreenCanvas(W, H);
+  const hctx = held.getContext('2d', { alpha: false });
+  let heldFor = -1;
+  const offset = look.offset || 0;
   const videoConfig = { codec: 'avc', bitrate, bitrateMode: 'variable', keyFrameInterval };
   if (codecString) videoConfig.fullCodecString = codecString;
   const videoSource = new mb.CanvasSource(canvas, videoConfig);
@@ -391,7 +396,8 @@ async function runExport({ job, clips, music, width: W, height: H, fps, bitrate,
     };
 
     let frame = 0;
-    for (const s of segs) {
+    for (const [si, s] of segs.entries()) {
+      const color = colorFor(s.color, look.grade, look.lane);
       const first = Math.ceil(s.tlStart * fps - 1e-6);
       const last = Math.min(frameCount, Math.ceil(s.tlEnd * fps - 1e-6));
       if (last <= first) continue;
@@ -401,16 +407,23 @@ async function runExport({ job, clips, music, width: W, height: H, fps, bitrate,
       for (let i = first; i < last; i++) {
         if (cancelled.has(job)) throw new DOMException('Export cancelled', 'AbortError');
         const t = i / fps;
-        ctx.fillStyle = '#000';
-        ctx.fillRect(0, 0, W, H);
+        const T = t + offset;
         if (s.bitmap) {
-          drawCover(ctx, s.bitmap, s.bitmap.width, s.bitmap.height, W, H);
-        } else if (iter) {
-          const { value: sample } = await iter.next();
-          if (sample) {
-            try { sample.drawWithFit(ctx, { fit: 'cover' }); } finally { sample.close(); }
-          }
+          drawBase(bctx, W, H, { draw: (c, dx, dy, dw, dh) => c.drawImage(s.bitmap, dx, dy, dw, dh), sw: s.bitmap.width, sh: s.bitmap.height, frame: s.frame, color });
+        } else {
+          const sample = iter ? (await iter.next()).value : null;
+          try {
+            // VideoSample.draw applies the clip's rotation; displayWidth/Height are its upright size. // VERIFY on iOS 26.
+            drawBase(bctx, W, H, {
+              draw: sample ? (c, dx, dy, dw, dh) => sample.draw(c, dx, dy, dw, dh) : null,
+              sw: sample?.displayWidth, sh: sample?.displayHeight, frame: s.frame, color
+            });
+          } finally { sample?.close(); }
         }
+        const tr = transitionAt(s, s.fullStart ?? s.tlStart + offset, s.fullLen ?? s.tlEnd - s.tlStart, T, look.lane);
+        composite(ctx, W, H, base, tr && heldFor === si ? held : null, tr);
+        drawOverlays(ctx, W, H, { texts: look.texts, stickers: look.stickers, T, lane: look.lane });
+        if (i === last - 1) { hctx.drawImage(base, 0, 0); heldFor = si + 1; }
         if (t >= audioDone) await pushAudioUntil(Math.min(total, audioDone + 1));
         await videoSource.add(t, 1 / fps);
         frame = i + 1;

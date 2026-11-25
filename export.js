@@ -6,6 +6,7 @@ import { CONFIG } from './config.js';
 import { PROJECTS, OPFS, WORKER, STORAGE, SAVE } from './storage.js';
 import { DEBUG } from './debug.js';
 import { layout, totalLength, fmtBytes } from './editor.js';
+import { frameFor } from './look.js';
 import { PLATFORMS, PLATFORM_KEYS, exportRows, groupRows, storyRanges, specCheck, sourceLimits, fmtLen } from './platforms.js';
 
 const X = CONFIG.EXPORT;
@@ -43,13 +44,16 @@ function rows(max) {
 }
 
 // The clips between timeline seconds a and b (for Story parts), trimmed to fit.
-function clipsInRange(a, b) {
+// Each clip carries its look: color, its framing for this export's shape, and its transition (Prompt 6).
+function clipsInRange(a, b, ratio) {
   return layout(project).filter((s) => s.end > a + 1e-6 && s.start < b - 1e-6).map((s) => {
     const from = Math.max(a, s.start), to = Math.min(b, s.end);
     return {
       path: s.asset.path, kind: s.asset.kind,
       in: s.clip.in + (from - s.start) * s.clip.speed, out: s.clip.in + (to - s.start) * s.clip.speed,
-      speed: s.clip.speed, volume: s.clip.volume ?? 1, muted: !!s.clip.muted
+      speed: s.clip.speed, volume: s.clip.volume ?? 1, muted: !!s.clip.muted,
+      color: s.clip.color || null, frame: frameFor(s.clip, ratio), transition: s.clip.transition || null,
+      fullStart: s.start, fullLen: s.end - s.start
     };
   });
 }
@@ -163,7 +167,7 @@ function renderFormats() {
       $('b', row).textContent = r.label.includes(r.ratio) ? r.label : `${r.label} ${r.ratio}`;
       $('small', row).textContent = r.unavailable
         ? ` ${r.unavailable}`
-        : ` ${r.width} x ${r.height} · ${r.fps} fps · ${r.bitrate / 1e6} Mbps${r.parts > 1 ? ` · ${r.parts} parts` : ''}${r.upscaleAvoided ? ' · sized to your clips (no upscaling)' : ''}${r.ratio !== '9:16' ? ` · your 9:16 edit is center-cropped to fill ${r.ratio}` : ''}`;
+        : ` ${r.width} x ${r.height} · ${r.fps} fps · ${r.bitrate / 1e6} Mbps${r.parts > 1 ? ` · ${r.parts} parts` : ''}${r.upscaleAvoided ? ' · sized to your clips (no upscaling)' : ''}${r.ratio !== '9:16' ? ` · uses your ${r.ratio} framing from Reframe (or your 9:16 one)` : ''}`;
       input.addEventListener('change', () => {
         project.exportPicks = [...box.querySelectorAll('input:checked')].map((i) => i.value);
         saveProject();
@@ -359,7 +363,8 @@ async function start() {
         offset: j.a, fullLength: total
       } : null;
       const res = await WORKER.call('export.run', {
-        job: job.id, clips: clipsInRange(j.a, j.b), music, width: g.width, height: g.height, fps: g.fps, bitrate: g.bitrate,
+        job: job.id, clips: clipsInRange(j.a, j.b, g.ratio), music,
+        look: { lane: project.lane, grade: project.grade || 'natural', texts: project.texts || [], stickers: project.stickers || [], offset: j.a }, width: g.width, height: g.height, fps: g.fps, bitrate: g.bitrate,
         audioBitrate: g.audioBitrate, keyFrameInterval: X.KEYFRAME_SECONDS, outPath: j.path, codecString: g.codecString
       }, [], 6 * 60 * 60 * 1000);
       DEBUG.log('info', `Exported ${j.name.replace(base, 'project')} ${fmtBytes(res.size)} ${res.duration.toFixed(1)}s in ${((performance.now() - t1) / 1000).toFixed(1)}s${res.audio === false ? ' (no audio: AAC encoder missing)' : ''}`, 'export');
