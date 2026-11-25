@@ -52,7 +52,7 @@ function clipsInRange(a, b, ratio) {
       path: s.asset.path, kind: s.asset.kind,
       in: s.clip.in + (from - s.start) * s.clip.speed, out: s.clip.in + (to - s.start) * s.clip.speed,
       speed: s.clip.speed, volume: s.clip.volume ?? 1, muted: !!s.clip.muted,
-      color: s.clip.color || null, frame: frameFor(s.clip, ratio), transition: s.clip.transition || null,
+      color: s.clip.color || null, frame: frameFor(s.clip, ratio), move: s.clip.move || null, transition: s.clip.transition || null,
       fullStart: s.start, fullLen: s.end - s.start
     };
   });

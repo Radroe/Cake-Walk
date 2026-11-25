@@ -5,7 +5,7 @@
 
 import { OPFS } from './storage.js';
 import { DEBUG } from './debug.js';
-import { RATIOS, frameFor, colorFor, drawBase, transitionAt, composite, drawOverlays, drawGuides } from './look.js';
+import { RATIOS, frameFor, moveFrame, colorFor, drawBase, transitionAt, composite, drawOverlays, drawGuides } from './look.js';
 
 // ---------- Timeline math (shared with editor.js and export.js) ----------
 
@@ -170,7 +170,7 @@ export const PLAYER = {
       drawGuides(ctx, W, H, { platform: p.platform, safe: v.safe, grid: v.grid });
       return;
     }
-    this.paintBase(this.base, seg, null);
+    this.paintBase(this.base, seg, null, T);
     const tr = v.effects ? transitionAt(seg.clip, seg.start, seg.end - seg.start, T, p.lane) : null;
     if (tr && this.heldFor !== seg.clip.id && !this.playing) this.captureHeld(seg);
     composite(ctx, W, H, this.base, tr && this.heldFor === seg.clip.id ? this.held : null, tr);
@@ -180,7 +180,8 @@ export const PLAYER = {
   },
 
   // The picture layer for a clip: its source framed for the preview ratio, with its color and the grade.
-  paintBase(canvas, seg, src) {
+  // T: the timeline time being drawn (for camera moves like the push-in); missing means the clip's start.
+  paintBase(canvas, seg, src, T) {
     const p = host.project();
     const v = host.view();
     const ctx = canvas.getContext('2d');
@@ -193,7 +194,7 @@ export const PLAYER = {
     drawBase(ctx, W, H, {
       draw: sw ? (c, dx, dy, dw, dh) => c.drawImage(el, dx, dy, dw, dh) : null,
       sw, sh,
-      frame: frameFor(seg.clip, v.ratio),
+      frame: moveFrame(frameFor(seg.clip, v.ratio), seg.clip.move, ((T ?? seg.start) - seg.start) / Math.max(0.001, seg.end - seg.start)),
       color: v.effects ? colorFor(seg.clip.color, p.grade, p.lane) : null
     });
   },
@@ -214,7 +215,7 @@ export const PLAYER = {
         im.src = src;
         await im.decode();
         if (job !== this.heldJob || !this.held) return;
-        this.paintBase(this.held, prev, im);
+        this.paintBase(this.held, prev, im, prev.end);
         mark();
         return;
       }
@@ -227,7 +228,7 @@ export const PLAYER = {
         setTimeout(done, 1500);
       });
       if (job !== this.heldJob || !this.held) return;
-      this.paintBase(this.held, prev, el);
+      this.paintBase(this.held, prev, el, prev.end);
       mark();
     } catch (err) {
       DEBUG.log('warn', `Preview transition: ${err.name}`, 'preview');

@@ -27,6 +27,8 @@ const MIGRATIONS = [
   // 3 -> 4: no new stores (Prompt 6 adds look data inside each project record)
   () => {},
   // 4 -> 5: no new stores (Prompt 7: recipes live in meta 'recipes'; projects gain a recipe link and guide track)
+  () => {},
+  // 5 -> 6: no new stores (Prompt 8: projects gain a template record and a series tag)
   () => {}
 ];
 
@@ -41,7 +43,10 @@ const PROJECT_MIGRATIONS = {
   // Per-clip color, framing and transition are added to a clip only when you set them (missing means natural, fill, cut).
   3: (p) => { p.texts ||= []; p.stickers ||= []; p.grade ||= 'natural'; p.viewRatio ||= '9:16'; p.lane = p.lane === 'CREATIVE' ? 'CREATIVE' : 'PRO'; },
   // 4 -> 5: Remix (Prompt 7): which recipe the project follows, and its muted guide track (never exported).
-  4: (p) => { p.recipeId ??= null; p.guide ??= null; }
+  4: (p) => { p.recipeId ??= null; p.guide ??= null; },
+  // 5 -> 6: Templates (Prompt 8): the template a project was filled from ({ id, name, lane, length, slots, ... })
+  // and its series tag ({ name, ep, show }). Clips may carry move: 'pushin'; missing means no move.
+  5: (p) => { p.template ??= null; p.series ??= null; }
 };
 
 export function upgradeProject(p) {
@@ -158,7 +163,9 @@ export const PROJECTS = {
       grade: 'natural',
       viewRatio: '9:16',
       recipeId: null, // Remix (Prompt 7): the recipe whose timing this project follows
-      guide: null     // { recipeId, path, name, duration, hear } the reference's sound, for timing only, never exported
+      guide: null,    // { recipeId, path, name, duration, hear } the reference's sound, for timing only, never exported
+      template: null, // Templates (Prompt 8): { id, name, lane, length, slots, beatSource, pending, caption, at }
+      series: null    // { name, ep, show } a series tag and episode number
     };
     await STORAGE.put('projects', project);
     return project;

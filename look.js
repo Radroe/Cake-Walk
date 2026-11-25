@@ -149,6 +149,15 @@ export function frameFor(clip, ratio = '9:16') {
   return { mode: 'fill', zoom: 1, x: 0, y: 0, ...(f || {}) };
 }
 
+// Camera moves (Prompt 8). 'pushin' is a slow push-in: the picture grows 8% over the clip.
+// progress runs 0 (clip start) to 1 (clip end). Same math in the preview and the export.
+export const PUSH_IN = 0.08;
+export function moveFrame(f, move, progress) {
+  if (move !== 'pushin') return f;
+  const p = Math.min(1, Math.max(0, progress || 0));
+  return { ...f, zoom: (f.zoom || 1) * (1 + PUSH_IN * p) };
+}
+
 let tmpCanvas = null;
 function tmp(w, h) {
   if (!tmpCanvas) tmpCanvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : null;

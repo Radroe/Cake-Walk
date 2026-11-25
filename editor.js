@@ -10,6 +10,8 @@ import { DEBUG } from './debug.js';
 import { renderGuard, timelineGuides, trimProjectTo, platformSheet, fmtLen } from './platforms.js';
 import { STYLE, STYLE_PANELS, dualCut } from './style.js';
 import { slotSheet, guideRow } from './remix.js';
+import { fillProject, addClipsSheet, templateSheet, doneText, songBeats } from './gallery.js';
+import { hookCheck, pacingGuide, loopHelper } from './helpers.js';
 
 const E = CONFIG.EDITOR;
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -201,7 +203,8 @@ async function importFiles(files, mode) {
     panel.close();
     importAbort = null;
   }
-  if (added) ui.toast(added === 1 ? 'Clip in. Let\'s cook.' : `${added} clips in. Let's cook.`, { sparkle: true });
+  if (added && project.template?.pending) await fillPending();
+  else if (added) ui.toast(added === 1 ? 'Clip in. Let\'s cook.' : `${added} clips in. Let's cook.`, { sparkle: true });
   if (warnings.length) {
     const body = document.createElement('ul');
     body.className = 'warn-list';
@@ -209,6 +212,25 @@ async function importFiles(files, mode) {
     ui.sheet({ title: 'Heads up', body, actions: [{ label: 'Got it', value: true, main: true }] });
   }
 }
+
+// Prompt 8: a template waiting for clips fills its shots as soon as they're in. One undo step puts the clips back.
+async function fillPending() {
+  remember();
+  const res = await fillProject(project, ui);
+  if (!res) { undoStack.pop(); return; }
+  selected = null;
+  changed();
+  STYLE.refresh();
+  await saveNow();
+  ui.toast(doneText(res), { sparkle: true, ms: 4200 });
+}
+const helperApi = () => ({
+  ui, project, remember, changed,
+  select: (id) => { selected = id; renderTimeline(); renderSelection(); },
+  showStyle: (name, pick) => STYLE.show(name, pick),
+  beats: () => songBeats(project, ui).then((b) => { queueSave(); return b; })
+});
+const templateApi = () => ({ ui, project, remember, changed, leave: () => EDITOR.saveOpenWork(), refresh: () => STYLE.refresh() });
 
 function clipWarnings(a) {
   const out = [];
@@ -468,7 +490,11 @@ async function moreSheet() {
     ['Stickers', () => STYLE.show('stickers')],
     ['Safe zones', () => STYLE.show('guides')],
     [`Dual cut (make a ${project.lane === 'PRO' ? 'CREATIVE' : 'PRO'} version)`, () => dualCut(ui, project, (id) => ui.go('editor', { id }))],
-    ['Remix timing (copy a video you like)', () => ui.go('remix', { id: project.id })]
+    ['Remix timing (copy a video you like)', () => ui.go('remix', { id: project.id })],
+    ['Templates', () => (project.template ? templateSheet(templateApi()) : ui.go('templates', { id: project.id }))],
+    ['Hook check (first 2 seconds)', () => hookCheck(helperApi())],
+    ['Pacing guide', () => pacingGuide(helperApi())],
+    ['Loop helper (first and last frames)', () => loopHelper(helperApi())]
   ];
   let chosen = null;
   items.forEach(([label, fn]) => {
@@ -519,7 +545,7 @@ function renderSelection() {
   const c = selClip();
   if (['color', 'transition', 'reframe'].includes(STYLE.open)) STYLE.refresh();
   $('[data-slot="clipbar"]', root).classList.toggle('hidden', !c);
-  $('[data-act="ed-slot"]', root)?.classList.toggle('hidden', !(c && project.recipeId && c.slot != null));
+  $('[data-act="ed-slot"]', root)?.classList.toggle('hidden', !(c && (project.recipeId || project.template?.slots?.length) && c.slot != null));
   const meta = $('[data-slot="meta"]', root);
   if (!c) { meta.textContent = project.clips.length ? 'Tap a clip to edit it.' : ''; return; }
   const a = project.assets[c.assetId];
@@ -856,6 +882,13 @@ export const EDITOR = {
       if (STYLE_PANELS.includes(r.panel)) setTimeout(() => STYLE.show(r.panel), 350);
       else if (fns[r.panel] && (!needsClip || selClip()) && (r.panel !== 'music' || project.music)) setTimeout(() => openPanel(r.panel, fns[r.panel]), 350);
     }
+    // Prompt 8: a new video from a template opens straight to picking its clips.
+    if (opts.addClips && project.template?.pending && !project.clips.length && !safeMode) {
+      setTimeout(async () => {
+        const which = await addClipsSheet(ui, project);
+        if (which) importFiles(await pick(which === 'quick' ? { accept: 'image/*,video/*' } : {}), which);
+      }, 350);
+    }
   },
 
   async close() {
@@ -895,7 +928,7 @@ async function onClick(e) {
     case 'ed-quick': importFiles(await pick({ accept: 'image/*,video/*' }), 'quick'); break;
     case 'ed-files': importFiles(await pick({}), 'files'); break;
     case 'ed-add': {
-      const which = await ui.sheet({ title: 'Add clips', text: 'For full quality, save the clip to Files first (in Photos, tap Share, then Save to Files), then use Original quality.', actions: [{ label: 'Quick (Photos)', value: 'quick' }, { label: 'Original (Files)', value: 'files', main: true }] });
+      const which = project.template?.pending ? await addClipsSheet(ui, project) : await ui.sheet({ title: 'Add clips', text: 'For full quality, save the clip to Files first (in Photos, tap Share, then Save to Files), then use Original quality.', actions: [{ label: 'Quick (Photos)', value: 'quick' }, { label: 'Original (Files)', value: 'files', main: true }] });
       if (which === 'quick') importFiles(await pick({ accept: 'image/*,video/*' }), 'quick');
       if (which === 'files') importFiles(await pick({}), 'files');
       break;
@@ -930,7 +963,10 @@ async function onClick(e) {
     }
     case 'ed-text': STYLE.show('text'); break;
     case 'ed-dock-done': STYLE.close(); break;
-    case 'ed-template': ui.soon('Templates'); break;
+    case 'ed-template':
+      if (project.template) templateSheet(templateApi());
+      else { await EDITOR.saveOpenWork(); ui.go('templates', { id: project.id }); }
+      break;
     case 'ed-more': openPanel('more', moreSheet); break;
     case 'ed-zoom-in': zoomTo(px * 1.5); break;
     case 'ed-zoom-out': zoomTo(px / 1.5); break;

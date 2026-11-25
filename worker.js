@@ -3,7 +3,7 @@
 // Every message: { id, type, payload }. Every reply: { id, ok, result } or { id, ok: false, error }.
 
 import { CONFIG } from './config.js';
-import { colorFor, drawBase, transitionAt, composite, drawOverlays } from './look.js';
+import { colorFor, drawBase, transitionAt, composite, drawOverlays, moveFrame, frameFor } from './look.js';
 import { lumaOf, frameDiff, detectCuts, OnsetMeter, detectBeats } from './rhythm.js';
 import { relabelAvcC } from './avc.js';
 
@@ -423,19 +423,21 @@ async function runExport({ job, clips, music, look = {}, width: W, height: H, fp
         if (cancelled.has(job)) throw new DOMException('Export cancelled', 'AbortError');
         const t = i / fps;
         const T = t + offset;
+        const segStart = s.fullStart ?? s.tlStart + offset, segLen = s.fullLen ?? s.tlEnd - s.tlStart;
+        const fr = s.move ? moveFrame(s.frame, s.move, (T - segStart) / Math.max(0.001, segLen)) : s.frame;
         if (s.bitmap) {
-          drawBase(bctx, W, H, { draw: (c, dx, dy, dw, dh) => c.drawImage(s.bitmap, dx, dy, dw, dh), sw: s.bitmap.width, sh: s.bitmap.height, frame: s.frame, color });
+          drawBase(bctx, W, H, { draw: (c, dx, dy, dw, dh) => c.drawImage(s.bitmap, dx, dy, dw, dh), sw: s.bitmap.width, sh: s.bitmap.height, frame: fr, color });
         } else {
           const sample = iter ? (await iter.next()).value : null;
           try {
             // VideoSample.draw applies the clip's rotation; displayWidth/Height are its upright size. // VERIFY on iOS 26.
             drawBase(bctx, W, H, {
               draw: sample ? (c, dx, dy, dw, dh) => sample.draw(c, dx, dy, dw, dh) : null,
-              sw: sample?.displayWidth, sh: sample?.displayHeight, frame: s.frame, color
+              sw: sample?.displayWidth, sh: sample?.displayHeight, frame: fr, color
             });
           } finally { sample?.close(); }
         }
-        const tr = transitionAt(s, s.fullStart ?? s.tlStart + offset, s.fullLen ?? s.tlEnd - s.tlStart, T, look.lane);
+        const tr = transitionAt(s, segStart, segLen, T, look.lane);
         composite(ctx, W, H, base, tr && heldFor === si ? held : null, tr);
         drawOverlays(ctx, W, H, { texts: look.texts, stickers: look.stickers, T, lane: look.lane });
         if (i === last - 1) { hctx.drawImage(base, 0, 0); heldFor = si + 1; }
@@ -694,6 +696,60 @@ handlers['remix.analyze'] = async ({ job, path, crop, cuts: findCuts = true, bea
     remixCancelled.delete(job);
     input.dispose();
   }
+};
+
+// ---------- Frames for the editing helpers (Prompt 8) ----------
+// items: [{ path, kind, t, frame, color }], t in the clip's own seconds. Each picture is drawn the way the export
+// draws it (framing and color, no text), then measured: mean brightness 0 to 1, plus a small luma map for motion.
+// jpeg: true also returns a picture (for the loop helper).
+handlers['frames.grab'] = async ({ items = [], width = 180, height = 320, jpeg: wantJpeg = false }) => {
+  const out = new Array(items.length).fill(null);
+  const big = new OffscreenCanvas(width, height);
+  const bctx = big.getContext('2d');
+  const small = new OffscreenCanvas(36, 64);
+  const sctx = small.getContext('2d', { willReadFrequently: true });
+  const finish = async (i) => {
+    sctx.drawImage(big, 0, 0, 36, 64);
+    const { y, hist } = lumaOf(sctx.getImageData(0, 0, 36, 64).data);
+    let sum = 0;
+    for (let k = 0; k < y.length; k++) sum += y[k];
+    out[i] = { mean: sum / (y.length * 255), y, hist, blob: wantJpeg ? await big.convertToBlob({ type: 'image/jpeg', quality: 0.8 }) : null };
+  };
+  const byPath = new Map();
+  items.forEach((it, i) => { if (it?.path) { if (!byPath.has(it.path)) byPath.set(it.path, []); byPath.get(it.path).push(i); } });
+  for (const [path, idx] of byPath) {
+    const kind = items[idx[0]].kind;
+    try {
+      if (kind === 'photo') {
+        const bmp = await createImageBitmap(await readFile(path));
+        for (const i of idx) {
+          bctx.fillStyle = '#000'; bctx.fillRect(0, 0, width, height);
+          drawBase(bctx, width, height, { draw: (c, dx, dy, dw, dh) => c.drawImage(bmp, dx, dy, dw, dh), sw: bmp.width, sh: bmp.height, frame: items[i].frame || frameFor(null), color: items[i].color || null });
+          await finish(i);
+        }
+        bmp.close();
+        continue;
+      }
+      const { mb, input } = await openInput(path);
+      try {
+        const video = await input.getPrimaryVideoTrack();
+        if (!video || !(await video.canDecode())) continue;
+        const start = await video.getFirstTimestamp().catch(() => 0);
+        const order = [...idx].sort((a, b) => items[a].t - items[b].t);
+        const sink = new mb.CanvasSink(video, { width: Math.max(width, 240), poolSize: 1 });
+        let k = 0;
+        for await (const wrapped of sink.canvasesAtTimestamps(order.map((i) => start + Math.max(0, items[i].t || 0)))) {
+          const i = order[k++];
+          bctx.fillStyle = '#000'; bctx.fillRect(0, 0, width, height);
+          if (wrapped) drawBase(bctx, width, height, { draw: (c, dx, dy, dw, dh) => c.drawImage(wrapped.canvas, dx, dy, dw, dh), sw: wrapped.canvas.width, sh: wrapped.canvas.height, frame: items[i].frame || frameFor(null), color: items[i].color || null });
+          await finish(i);
+        }
+      } finally { input.dispose(); }
+    } catch (err) {
+      // A clip that can't be read leaves its items empty; the helper says so instead of guessing.
+    }
+  }
+  return out;
 };
 
 handlers['ping'] = async () => ({ pong: true, version: CONFIG.APP_VERSION });

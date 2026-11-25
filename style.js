@@ -115,7 +115,8 @@ export const STYLE = {
 
   get open() { return mode; },
 
-  show(name) {
+  // pick: { text: id } opens the text panel with that text selected (the hook check's Add hook text).
+  show(name, pick) {
     if (!api || !TITLES[name]) return;
     if (api.safe()) { api.ui.toast('Styles and text are off while this project opens in safe mode.'); return; }
     if (!api.project().clips.length) { api.ui.toast('Add a clip first.'); return; }
@@ -123,6 +124,7 @@ export const STYLE = {
     if (name !== 'text' && sel?.kind === 'text') sel = null;
     if (name !== 'stickers' && sel?.kind === 'sticker') sel = null;
     if (name === 'guides') view.safe = true;
+    if (name === 'text' && pick?.text) sel = { kind: 'text', id: pick.text };
     // Show the clip being styled: move the playhead into the selected clip if it's elsewhere.
     if (['color', 'transition', 'reframe'].includes(name)) api.showSelected();
     const d = dock();
@@ -379,6 +381,12 @@ function reframePanel(body) {
       api.ui.toast(`Every clip uses this ${ratio} framing.`);
     })
   ));
+  // Prompt 8: a slow push-in (8% over the clip), the same in the preview and the export.
+  body.appendChild(row(toggle('Slow push-in', c.move === 'pushin', (on) => {
+    api.remember();
+    if (on) c.move = 'pushin'; else delete c.move;
+    edited();
+  })));
   body.appendChild(note('Each shape keeps its own framing, and the export uses the framing for its shape.'));
 }
 

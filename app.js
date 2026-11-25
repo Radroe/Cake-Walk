@@ -7,6 +7,8 @@ import { EDITOR } from './editor.js';
 import { EXPORT } from './export.js';
 import { LOADS, renderRecovery, renderStorage, backupNow, restoreBackup } from './safety.js';
 import { renderRemix, closeRemix } from './remix.js';
+import { renderGallery } from './gallery.js';
+import { seriesLabel } from './templates.js';
 
 DEBUG.init();
 
@@ -277,7 +279,8 @@ const screens = {
       const meta = document.createElement('p');
       meta.className = 'muted small';
       const n = (p.clips || []).length;
-      meta.textContent = `${p.lane} · ${n} clip${n === 1 ? '' : 's'} · edited ${new Date(p.updatedAt).toLocaleDateString()}`;
+      const tag = [seriesLabel(p.series), p.template?.name].filter(Boolean)[0];
+      meta.textContent = `${p.lane}${tag ? ` · ${tag}` : ''} · ${n} clip${n === 1 ? '' : 's'} · edited ${new Date(p.updatedAt).toLocaleDateString()}`;
       grow.append(h, meta);
       card.appendChild(grow);
       card.addEventListener('click', () => go('editor', { id: p.id }));
@@ -293,7 +296,7 @@ const screens = {
       return go('recovery', { id });
     }
     if (id) await LOADS.begin(id);
-    await EDITOR.render(main, ui, id, { restore: params.restore, safe: params.safe });
+    await EDITOR.render(main, ui, id, { restore: params.restore, safe: params.safe, addClips: params.addClips });
     if (id) await LOADS.ok();
     if (EDITOR.project) await STORAGE.put('meta', EDITOR.project.id, 'lastProject');
   },
@@ -308,6 +311,11 @@ const screens = {
 
   async storage(main) {
     await renderStorage(main, ui);
+  },
+
+  // Templates (Prompt 8): params.id is the project to use a template on.
+  async templates(main, params) {
+    await renderGallery(main, ui, params);
   },
 
   // Remix (Prompt 7): params.id is the project to apply a recipe to, params.recipe a recipe to reopen.

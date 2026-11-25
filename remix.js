@@ -890,11 +890,13 @@ export async function applyRecipe(project, recipe) {
 // api: { ui, project, clip, remember(), changed(), clipLen(c) }
 export async function slotSheet(api) {
   const { project, clip } = api;
-  const recipe = await RECIPES.get(project.recipeId);
+  const recipe = project.recipeId ? await RECIPES.get(project.recipeId) : null;
+  const tslots = !recipe ? project.template?.slots : null;   // a template's shots (Prompt 8) have names
   const len = api.clipLen(clip);
   const body = el('div');
-  const total = recipe ? slotsOf(recipe).length : null;
-  body.appendChild(el('p', 'muted small', `Shot ${clip.slot + 1}${total ? ` of ${total}` : ''} · ${len.toFixed(2)}s${recipe ? ` · ${recipe.name}` : ''}. The shot keeps its length.`));
+  const total = recipe ? slotsOf(recipe).length : tslots?.length || null;
+  const shot = tslots?.[clip.slot]?.name;
+  body.appendChild(el('p', 'muted small', `Shot ${clip.slot + 1}${total ? ` of ${total}` : ''}${shot ? `: ${shot}` : ''} · ${len.toFixed(2)}s${recipe ? ` · ${recipe.name}` : project.template ? ` · ${project.template.name}` : ''}. The shot keeps its length.`));
   const slideBox = el('div');
   const buildSlide = () => {
     slideBox.innerHTML = '';
