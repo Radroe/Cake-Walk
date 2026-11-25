@@ -4,6 +4,8 @@
 
 import { CONFIG } from './config.js';
 import { colorFor, drawBase, transitionAt, composite, drawOverlays } from './look.js';
+import { lumaOf, frameDiff, detectCuts, OnsetMeter, detectBeats } from './rhythm.js';
+import { relabelAvcC } from './avc.js';
 
 const handlers = {};
 let mediabunny = null;
@@ -356,6 +358,19 @@ async function runExport({ job, clips, music, look = {}, width: W, height: H, fp
   const offset = look.offset || 0;
   const videoConfig = { codec: 'avc', bitrate, bitrateMode: 'variable', keyFrameInterval };
   if (codecString) videoConfig.fullCodecString = codecString;
+  // Label the file BT.709, the SDR standard TikTok, Instagram and YouTube expect. The frames come from an sRGB canvas,
+  // so some encoders write the sRGB transfer label instead; the picture is the same SDR picture either way.
+  // Mediabunny writes the file's color box from this same object right after this hook. // VERIFY on iOS 26.
+  // The stream's own settings (SPS) can carry the sRGB label too; relabelAvcC fixes just that byte, or leaves it.
+  videoConfig.onEncodedPacket = (packet, meta) => {
+    const dc = meta?.decoderConfig;
+    if (!dc) return;
+    dc.colorSpace = { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: !!dc.colorSpace?.fullRange };
+    if (dc.description) {
+      const fixed = relabelAvcC(dc.description);
+      if (fixed) dc.description = fixed;
+    }
+  };
   const videoSource = new mb.CanvasSource(canvas, videoConfig);
   output.addVideoTrack(videoSource, { frameRate: fps, maximumPacketCount: Math.ceil(frameCount * 1.1) + 60 });
   // AAC-LC 48 kHz stereo. If this browser can't encode AAC (only seen outside iOS), export picture only and say so.
@@ -554,6 +569,131 @@ handlers['caps'] = async () => {
   }
 
   return result;
+};
+
+// ---------- Remix: read the timing of a video you like (Prompt 7) ----------
+// Cuts: small frames (about 160 px wide), with the app's buttons and captions cropped out first, compared one
+// after another. Beats: the sound is decoded with WebCodecs (AudioDecoder, through Mediabunny's AudioSampleSink)
+// and reduced to a loudness curve of 100 numbers a second, so a long song never sits in memory.
+// Only timing comes out of here. No picture or sound from the reference is ever copied into your video.
+
+const remixCancelled = new Set();
+handlers['remix.cancel'] = async ({ job }) => { remixCancelled.add(job); return true; };
+
+function remixProgress(job, stage, value) {
+  self.postMessage({ type: 'remix-progress', job, stage, value: Math.max(0, Math.min(1, value)) });
+}
+
+async function readBeats(mb, input, job, from, to, onPart) {
+  const audio = await input.getPrimaryAudioTrack();
+  if (!audio || !(await audio.canDecode())) return { beats: [], bpm: null, noAudio: true };
+  const sink = new mb.AudioSampleSink(audio);
+  let meter = null;
+  const span = Math.max(0.1, to - from);
+  for await (const sample of sink.samples(from, to)) {
+    try {
+      if (remixCancelled.has(job)) throw new DOMException('Cancelled', 'AbortError');
+      meter ||= new OnsetMeter(sample.sampleRate);
+      const n = sample.numberOfFrames, ch = Math.min(2, sample.numberOfChannels);
+      const mono = new Float32Array(n);
+      const buf = new Float32Array(n);
+      for (let c = 0; c < ch; c++) {
+        sample.copyTo(buf, { planeIndex: c, format: 'f32-planar' });
+        for (let i = 0; i < n; i++) mono[i] += buf[i] / ch;
+      }
+      meter.push(mono);
+      onPart(Math.min(1, (sample.timestamp - from) / span));
+    } finally {
+      sample.close();
+    }
+  }
+  if (!meter) return { beats: [], bpm: null, noAudio: true };
+  const found = detectBeats(meter.envelope(), { duration: span });
+  return { beats: found.beats.map((b) => +(b + from).toFixed(3)), bpm: found.bpm };
+}
+
+// crop: the part of the frame to watch, as fractions { x0, y0, x1, y1 }. beatsPath: a different file to take
+// beats from (your own song); leave it out to use the reference's sound. cuts: false skips cut finding.
+handlers['remix.analyze'] = async ({ job, path, crop, cuts: findCuts = true, beats: findBeats = true, beatsPath = null, fps = 15, width = 160 }) => {
+  remixCancelled.delete(job);
+  const { mb, input } = await openInput(path);
+  const out = { duration: 0, cuts: [], beats: [], bpm: null, noAudio: false, frames: 0 };
+  try {
+    const duration = await input.computeDuration();
+    out.duration = +duration.toFixed(3);
+    const video = await input.getPrimaryVideoTrack();
+    if (findCuts && video && (await video.canDecode())) {
+      const start = await video.getFirstTimestamp().catch(() => 0);
+      const step = 1 / fps;
+      const times = [];
+      for (let t = start; t < start + duration - step / 2; t += step) times.push(t);
+      const c = crop || { x0: 0, y0: 0, x1: 1, y1: 1 };
+      const sink = new mb.CanvasSink(video, { width: width * 2, poolSize: 1 });
+      const small = new OffscreenCanvas(width, Math.max(16, Math.round(width * 16 / 9)));
+      const sctx = small.getContext('2d', { willReadFrequently: true });
+      const lumaOfFrame = (src) => {
+        const sx = src.width * c.x0, sy = src.height * c.y0;
+        const sw = Math.max(4, src.width * (c.x1 - c.x0)), sh = Math.max(4, src.height * (c.y1 - c.y0));
+        const h = Math.max(16, Math.round(width * sh / sw));
+        if (small.height !== h) small.height = h;
+        sctx.drawImage(src, sx, sy, sw, sh, 0, 0, width, h);
+        return lumaOf(sctx.getImageData(0, 0, width, h).data);
+      };
+      const scores = [], when = [];
+      let prev = null, i = 0;
+      for await (const wrapped of sink.canvasesAtTimestamps(times)) {
+        if (remixCancelled.has(job)) throw new DOMException('Cancelled', 'AbortError');
+        const t = times[i++];
+        if (!wrapped) continue;
+        const cur = lumaOfFrame(wrapped.canvas);
+        scores.push(prev ? frameDiff(prev, cur) : 0);
+        when.push(+(t - start).toFixed(3));
+        prev = cur;
+        if (i % 15 === 0) remixProgress(job, 'cuts', (i / times.length) * (findBeats ? 0.65 : 0.9));
+      }
+      out.frames = scores.length;
+      const rough = detectCuts(scores, when);
+      // Sharpen each cut: look at four more frames between the two samples and take the first one that
+      // already looks like the new shot. That puts the cut within about one video frame of the real one.
+      const sharp = [];
+      for (const cut of rough) {
+        if (remixCancelled.has(job)) throw new DOMException('Cancelled', 'AbortError');
+        const k = when.indexOf(cut);
+        const a = k > 0 ? when[k - 1] : cut - step;
+        const sub = [a, a + step * 0.2, a + step * 0.4, a + step * 0.6, a + step * 0.8, cut].map((v) => start + v);
+        const lumas = [];
+        for await (const wrapped of sink.canvasesAtTimestamps(sub)) lumas.push(wrapped ? lumaOfFrame(wrapped.canvas) : null);
+        const before = lumas[0], after = lumas[lumas.length - 1];
+        let at = cut;
+        if (before && after) {
+          for (let j = 1; j < lumas.length; j++) {
+            if (lumas[j] && frameDiff(lumas[j], after) < frameDiff(lumas[j], before)) { at = +(sub[j] - start).toFixed(3); break; }
+          }
+        }
+        sharp.push(at);
+      }
+      out.cuts = sharp;
+      remixProgress(job, 'cuts', findBeats ? 0.7 : 1);
+    }
+    if (findBeats) {
+      let res;
+      if (beatsPath && beatsPath !== path) {
+        const other = await openInput(beatsPath);
+        try {
+          const d = await other.input.computeDuration();
+          res = await readBeats(other.mb, other.input, job, 0, Math.min(d, duration), (f) => remixProgress(job, 'beats', 0.7 + f * 0.3));
+        } finally { other.input.dispose(); }
+      } else {
+        res = await readBeats(mb, input, job, 0, duration, (f) => remixProgress(job, 'beats', (findCuts ? 0.7 : 0) + f * (findCuts ? 0.3 : 1)));
+      }
+      Object.assign(out, res);
+    }
+    remixProgress(job, 'done', 1);
+    return out;
+  } finally {
+    remixCancelled.delete(job);
+    input.dispose();
+  }
 };
 
 handlers['ping'] = async () => ({ pong: true, version: CONFIG.APP_VERSION });

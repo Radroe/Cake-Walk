@@ -9,6 +9,7 @@ import { checkClips, missingSheet } from './safety.js';
 import { DEBUG } from './debug.js';
 import { renderGuard, timelineGuides, trimProjectTo, platformSheet, fmtLen } from './platforms.js';
 import { STYLE, STYLE_PANELS, dualCut } from './style.js';
+import { slotSheet, guideRow } from './remix.js';
 
 const E = CONFIG.EDITOR;
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -467,7 +468,7 @@ async function moreSheet() {
     ['Stickers', () => STYLE.show('stickers')],
     ['Safe zones', () => STYLE.show('guides')],
     [`Dual cut (make a ${project.lane === 'PRO' ? 'CREATIVE' : 'PRO'} version)`, () => dualCut(ui, project, (id) => ui.go('editor', { id }))],
-    ['Remix timing', () => ui.soon('Remix')]
+    ['Remix timing (copy a video you like)', () => ui.go('remix', { id: project.id })]
   ];
   let chosen = null;
   items.forEach(([label, fn]) => {
@@ -518,6 +519,7 @@ function renderSelection() {
   const c = selClip();
   if (['color', 'transition', 'reframe'].includes(STYLE.open)) STYLE.refresh();
   $('[data-slot="clipbar"]', root).classList.toggle('hidden', !c);
+  $('[data-act="ed-slot"]', root)?.classList.toggle('hidden', !(c && project.recipeId && c.slot != null));
   const meta = $('[data-slot="meta"]', root);
   if (!c) { meta.textContent = project.clips.length ? 'Tap a clip to edit it.' : ''; return; }
   const a = project.assets[c.assetId];
@@ -595,6 +597,9 @@ function renderTimeline() {
     mrow.appendChild(m);
   }
   track.appendChild(mrow);
+  // Remix guide track (Prompt 7): the reference's sound, muted unless you tap it. Never exported.
+  const g = guideRow(project, px, totalLength(project), () => { queueSave(); renderTimeline(); PLAYER.syncGuide(PLAYER.playing); });
+  if (g) { const grow = document.createElement('div'); grow.className = 'tl-mrow'; grow.appendChild(g); track.appendChild(grow); }
   // Target band and limit line for the chosen platform.
   const guides = timelineGuides(guardOpts());
   if (guides.band) {
@@ -908,6 +913,7 @@ async function onClick(e) {
     case 'ed-left': move(-1); break;
     case 'ed-right': move(1); break;
     case 'ed-info': openPanel('info', infoSheet); break;
+    case 'ed-slot': if (selClip()) slotSheet({ ui, project, clip: selClip(), remember, changed, clipLen }); break;
     case 'ed-music': openPanel('music', musicSheet); break;
     case 'ed-platform': {
       const key = await platformSheet(ui, project.platform);

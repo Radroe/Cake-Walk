@@ -144,7 +144,7 @@
   <!-- More tools sheet -->
   <template id="tpl-more">
     <div class="sheet-list">
-      <button class="list-btn" data-act="soon" data-feature="Remix">Remix a video I like</button>
+      <button class="list-btn" data-go="remix">Remix a video I like</button>
       <button class="list-btn" data-go="storage">Storage</button>
       <button class="list-btn" data-act="soon" data-feature="Caption helper">Caption helper</button>
       <button class="list-btn" data-act="soon" data-feature="Agency kit">Agency kit</button>
@@ -210,6 +210,7 @@
         </div>
         <p class="muted small ed-meta" data-slot="meta"></p>
         <div class="clipbar hidden" data-slot="clipbar">
+          <button data-act="ed-slot" class="hidden">Slot</button>
           <button data-act="ed-split">Split</button>
           <button data-act="ed-speed">Speed</button>
           <button data-act="ed-volume">Sound</button>
@@ -381,6 +382,11 @@
         <p class="label">Old exports</p>
         <p class="note">Copies you shared or saved live on in Photos or Files, so these are safe to clear.</p>
         <div data-slot="exports"></div>
+      </div>
+      <div class="card">
+        <p class="label">Remix reference videos</p>
+        <p class="note">Each one stays with its recipe so you can redo the timing. Deleting it keeps the recipe's timing.</p>
+        <div data-slot="refs"></div>
       </div>
       <div class="card">
         <p class="label">Unused clips</p>

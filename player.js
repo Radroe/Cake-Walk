@@ -34,6 +34,15 @@ let host = null;
 const urls = new Map();    // assetId -> object URL
 let missingWarned = false;
 
+// A file by its OPFS path (the Remix guide track, which isn't one of the project's clips).
+async function pathUrl(path) {
+  const key = `path:${path}`;
+  if (urls.has(key)) return urls.get(key);
+  const url = URL.createObjectURL(await OPFS.file(path));
+  urls.set(key, url);
+  return url;
+}
+
 async function assetUrl(assetId) {
   if (urls.has(assetId)) return urls.get(assetId);
   const asset = host.project().assets[assetId];
@@ -92,7 +101,9 @@ export const PLAYER = {
     stage.appendChild(img);
     const music = document.createElement('audio');
     music.preload = 'auto';
-    this.els = { a: mk(), b: mk(), img, music };
+    const guide = document.createElement('audio');   // Remix guide: the reference's sound, preview only
+    guide.preload = 'auto';
+    this.els = { a: mk(), b: mk(), img, music, guide };
     this.active = this.els.a;
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'pv-canvas';
@@ -103,7 +114,7 @@ export const PLAYER = {
 
   unmount() {
     this.pause();
-    if (this.els) for (const el of [this.els.a, this.els.b, this.els.music]) { el.pause(); el.removeAttribute('src'); el.load(); }
+    if (this.els) for (const el of [this.els.a, this.els.b, this.els.music, this.els.guide]) { el.pause(); el.removeAttribute('src'); el.load(); }
     this.els = null;
     this.canvas = null;
     this.stage = null;
@@ -117,7 +128,7 @@ export const PLAYER = {
   clearUrls() {
     urls.forEach((u) => URL.revokeObjectURL(u));
     urls.clear();
-    if (this.els) for (const el of [this.els.a, this.els.b, this.els.music]) delete el.dataset.asset;
+    if (this.els) for (const el of [this.els.a, this.els.b, this.els.music, this.els.guide]) delete el.dataset.asset;
   },
 
   // Size the stage for the preview ratio (9:16, 4:5, 1:1 or 16:9) inside the space available.
@@ -229,7 +240,7 @@ export const PLAYER = {
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       this.actx = new Ctx();
-      for (const key of ['a', 'b', 'music']) {
+      for (const key of ['a', 'b', 'music', 'guide']) {
         const g = this.actx.createGain();
         this.actx.createMediaElementSource(this.els[key]).connect(g).connect(this.actx.destination);
         this.gains.set(this.els[key], g);
@@ -314,6 +325,7 @@ export const PLAYER = {
     const m = p?.music;
     const el = this.els?.music;
     if (!el) return;
+    this.syncGuide(play);
     if (!m) { el.pause(); return; }
     const asset = p.assets[m.assetId];
     if (!asset) return;
@@ -326,6 +338,26 @@ export const PLAYER = {
       this.setGain(el, musicGain(m, t, Math.min(totalLength(p), asset.duration)));
       if (play && t < asset.duration) el.play().catch(() => {}); else if (!play) el.pause();
     }).catch(() => {});
+  },
+
+  // The Remix guide track: muted unless you turn on Hear guide. It is never part of the export.
+  syncGuide(play) {
+    const p = host?.project();
+    const g = p?.guide;
+    const el = this.els?.guide;
+    if (!el) return;
+    if (!g?.path || !g.hear) { el.pause(); return; }
+    pathUrl(g.path).then((src) => {
+      if (!this.els) return;
+      const t = host.time();
+      if (el.dataset.asset !== g.path) { el.src = src; el.dataset.asset = g.path; }
+      const want = Math.min(t, g.duration || t);
+      if (Math.abs(el.currentTime - want) > 0.15) { try { el.currentTime = want; } catch {} }
+      this.setGain(el, 0.9);
+      if (play && t < (g.duration || Infinity)) el.play().catch(() => {}); else if (!play) el.pause();
+    }).catch(() => {
+      if (!missingWarned) { missingWarned = true; host.toast('The guide sound is missing. Its reference video was deleted.'); }
+    });
   },
 
   async play() {
@@ -377,6 +409,7 @@ export const PLAYER = {
         this.setGain(this.els.music, musicGain(m, host.time(), Math.min(total, dur)));
         if (host.time() >= dur) this.els.music.pause();
       }
+      if (p.guide?.hear && p.guide.duration && host.time() >= p.guide.duration) this.els.guide.pause();
       this.draw();
       host.clock();
       host.follow();
@@ -388,7 +421,7 @@ export const PLAYER = {
   pause() {
     this.playing = false;
     cancelAnimationFrame(this.raf);
-    if (this.els) { this.els.a.pause(); this.els.b.pause(); this.els.music.pause(); }
+    if (this.els) { this.els.a.pause(); this.els.b.pause(); this.els.music.pause(); this.els.guide.pause(); }
     host?.playButton();
     host?.note();
     this.draw();

@@ -120,7 +120,8 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 // ---------- Lane rules, applied at draw time so old or copied data always obeys its lane ----------
 
-export function laneColor(color = {}, lane) {
+export function laneColor(color, lane) {
+  color ||= {};   // a clip with no color set comes through as null from the export, not undefined
   const L = laneOf(lane).color;
   const out = {};
   for (const k of COLOR_KEYS) out[k] = clamp(+color[k] || 0, L[k][0], L[k][1]);

@@ -460,3 +460,49 @@ textarea:focus { border-color: var(--pink-ink); }
 .sticker-btn { aspect-ratio: 1; border-radius: 12px; border: 1px solid var(--border); background: var(--panel); padding: 4px; }
 .sticker-btn canvas { width: 100%; height: 100%; display: block; }
 .dock-body .list-btn { font-size: 14px; }
+
+/* ---------- Prompt 7: Remix ---------- */
+.rx-head { display: flex; align-items: center; gap: 6px; margin: 4px 0 6px; }
+.rx-title { margin: 4px 0 6px; overflow-wrap: anywhere; }
+.rx-link { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; min-width: 0; }
+.rx-link .wrap { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rx-target b { font-family: var(--font-round); font-size: 17px; }
+.rx-stage { position: relative; width: min(100%, 300px); margin: 0 auto; border-radius: 14px; overflow: hidden; background: #000; }
+.rx-stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.rx-crop { position: absolute; border: 2px solid var(--pink); border-radius: 6px; box-shadow: 0 0 0 999px rgba(0,0,0,.45); pointer-events: none; }
+.rx-transport { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.rx-transport .clock { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 14px; }
+.rx-next { box-shadow: 0 0 0 2px var(--pink); }
+.rx-tl { position: relative; overflow-x: auto; overflow-y: hidden; margin: 10px -4px 6px; padding: 14px 4px 14px; -webkit-overflow-scrolling: touch; border-radius: 12px; background: var(--panel); }
+.rx-track { position: relative; height: 64px; touch-action: pan-x; }
+.rx-strip { position: absolute; inset: 8px 0; display: flex; overflow: hidden; border-radius: 8px; opacity: .85; pointer-events: none; }
+.rx-strip img { height: 100%; width: 40px; flex: none; object-fit: cover; }
+.rx-shot { position: absolute; top: 0; height: 8px; background: rgba(255,45,149,.35); font-size: 10px; line-height: 8px; color: transparent; pointer-events: none; }
+.rx-shot.alt { background: rgba(255,45,149,.15); }
+.rx-mark { position: absolute; width: 22px; margin-left: -11px; touch-action: none; z-index: 2; }
+.rx-mark::before { content: ""; position: absolute; left: 10px; width: 2px; border-radius: 2px; }
+.rx-mark::after { content: ""; position: absolute; left: 5px; width: 12px; height: 12px; border-radius: 50%; }
+.rx-cut { top: -10px; bottom: 6px; }
+.rx-cut::before { top: 0; bottom: 0; background: var(--pink); }
+.rx-cut::after { top: 0; background: var(--pink); }
+.rx-beat { bottom: -10px; height: 26px; }
+.rx-beat::before { bottom: 0; height: 22px; background: var(--green); }
+.rx-beat::after { bottom: 0; background: var(--green); width: 10px; height: 10px; left: 6px; }
+.rx-mark.sel::after { box-shadow: 0 0 0 3px var(--card), 0 0 0 5px var(--text); }
+.rx-ph { position: absolute; top: -12px; bottom: -12px; width: 2px; margin-left: -1px; background: var(--text); pointer-events: none; z-index: 3; }
+.rx-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; align-items: center; }
+.rx-tools .btn:disabled { opacity: .45; }
+.rx-tap { position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-end; background: rgba(0,0,0,.55); }
+.rx-tap-in { width: 100%; padding: 18px 16px calc(18px + env(safe-area-inset-bottom)); border-radius: 22px 22px 0 0; background: var(--card); }
+.rx-tap-clock { font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 700; margin: 4px 0 12px; }
+.rx-tap-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.tap-btn { min-height: 150px; border: 0; border-radius: 22px; font: 800 26px var(--font-round, inherit); color: var(--dark-on-accent); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+.tap-btn small { font-size: 15px; font-weight: 700; opacity: .8; }
+.tap-cut { background: var(--pink); }
+.tap-beat { background: var(--green); }
+.tap-btn.hit { animation: taphit .18s ease; }
+@keyframes taphit { 50% { transform: scale(.94); filter: brightness(1.15); } }
+.tl-guide { height: 22px; border-radius: 8px; border: 1px dashed var(--text-2); background: transparent; color: var(--text-2); font-size: 12px; font-weight: 600; text-align: left; padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-guide.on { border-style: solid; border-color: var(--pink-ink); color: var(--pink-ink); }
+.tl:has(.tl-guide) { height: 140px; }
+.ed-work.docked .tl:has(.tl-guide) { height: 112px; }

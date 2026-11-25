@@ -3,7 +3,7 @@
 // Everything here saves through the shared save system in storage.js.
 
 import { CONFIG } from './config.js';
-import { STORAGE, PROJECTS, OPFS, WORKER, THUMBS, SAVE, BACKUP } from './storage.js';
+import { STORAGE, PROJECTS, OPFS, WORKER, THUMBS, SAVE, BACKUP, RECIPES } from './storage.js';
 import { DEBUG } from './debug.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -131,9 +131,23 @@ async function replaceAsset(project, asset, file, onProgress) {
   DEBUG.log('info', `Replaced a ${asset.kind} (${info.width || ''}x${info.height || ''} ${info.codec || ''})`, 'safety');
 }
 
+// Files something still needs: every project's clips and songs, and each Remix recipe's reference video.
 async function pathsInUse() {
   const all = await PROJECTS.list().catch(() => []);
-  return new Set(all.flatMap((p) => PROJECTS.paths(p)));
+  const refs = await RECIPES.paths().catch(() => []);
+  return new Set([...all.flatMap((p) => PROJECTS.paths(p)), ...refs]);
+}
+
+// Delete a recipe's reference video but keep its timing. Projects using it lose only their guide sound.
+export async function dropReference(recipe) {
+  const path = recipe.refPath;
+  recipe.refPath = null;
+  recipe.refSize = 0;
+  await RECIPES.save(recipe, { now: true });
+  for (const p of await PROJECTS.list().catch(() => [])) {
+    if (p.guide?.path === path) { p.guide = null; await PROJECTS.save(p); }
+  }
+  if (path && !(await pathsInUse()).has(path)) await OPFS.remove(path).catch(() => {});
 }
 
 // ---------- Load counting: two failed loads in a row open Recovery instead of crashing ----------
@@ -258,12 +272,13 @@ export async function renderStorage(main, ui) {
   const view = clone('tpl-storage');
   main.appendChild(view);
   await SAVE.flush();
-  const [est, files, projects, shared, running] = await Promise.all([
+  const [est, files, projects, shared, running, recipes] = await Promise.all([
     STORAGE.estimate(),
     OPFS.list().catch(() => []),
     PROJECTS.list().catch(() => []),
     STORAGE.get('meta', 'exportsShared').catch(() => null),
-    STORAGE.get('meta', 'exportRunning').catch(() => null)
+    STORAGE.get('meta', 'exportRunning').catch(() => null),
+    RECIPES.list().catch(() => [])
   ]);
   const sizeOf = new Map(files.map((f) => [f.path, f.size]));
   const sharedSet = new Set(shared || []);
@@ -276,7 +291,7 @@ export async function renderStorage(main, ui) {
 
   // Projects, biggest first, with a nudge for ones not opened in 30 days
   const pBox = $('[data-slot="projects"]', view);
-  const used = new Set(projects.flatMap((p) => PROJECTS.paths(p)));
+  const used = new Set([...projects.flatMap((p) => PROJECTS.paths(p)), ...recipes.flatMap((r) => [r.refPath, r.beatPath]).filter(Boolean)]);
   const rows = projects.map((p) => ({ p, size: PROJECTS.paths(p).reduce((a, path) => a + (sizeOf.get(path) || 0), 0) })).sort((a, b) => b.size - a.size);
   if (!rows.length) pBox.appendChild(el('p', 'muted small', 'No projects yet.'));
   for (const { p, size } of rows) {
@@ -321,6 +336,27 @@ export async function renderStorage(main, ui) {
       rerender();
     });
     eBox.appendChild(all);
+  }
+
+  // Remix reference videos (Prompt 7): kept with their recipe until you delete the recipe or clean up here.
+  const rBox = $('[data-slot="refs"]', view);
+  const withRef = recipes.filter((r) => r.refPath && sizeOf.has(r.refPath));
+  if (!withRef.length) rBox.appendChild(el('p', 'muted small', 'None stored.'));
+  for (const r of withRef) {
+    const size = sizeOf.get(r.refPath) || 0;
+    const row = el('div', 'store-row');
+    const grow = el('div', 'grow');
+    grow.append(el('b', 'wrap', r.name), el('div', 'muted small', `${bytes(size)} · ${r.cuts.length} cuts, ${r.beats.length} beats`));
+    const del = el('button', 'btn btn-sm btn-ghost', 'Clean up');
+    del.addEventListener('click', async () => {
+      const yes = await ui.sheet({ title: `Delete the reference video for ${r.name}?`, text: 'The recipe keeps its cuts and beats, and projects using it keep their timing. You lose the guide sound and can\'t analyze it again unless you import it again.', actions: [{ label: 'Keep it', value: false }, { label: 'Delete video', value: true, main: true }] });
+      if (!yes) return;
+      await dropReference(r);
+      ui.toast(`Freed ${bytes(size)}.`, { sparkle: true });
+      rerender();
+    });
+    row.append(grow, del);
+    rBox.appendChild(row);
   }
 
   // Unused clips and songs: in Cake Walk's storage but in no project

@@ -6,6 +6,7 @@ import { DEBUG } from './debug.js';
 import { EDITOR } from './editor.js';
 import { EXPORT } from './export.js';
 import { LOADS, renderRecovery, renderStorage, backupNow, restoreBackup } from './safety.js';
+import { renderRemix, closeRemix } from './remix.js';
 
 DEBUG.init();
 
@@ -309,6 +310,11 @@ const screens = {
     await renderStorage(main, ui);
   },
 
+  // Remix (Prompt 7): params.id is the project to apply a recipe to, params.recipe a recipe to reopen.
+  async remix(main, params) {
+    await renderRemix(main, ui, params);
+  },
+
   async settings(main) {
     const el = clone('tpl-settings');
     fillSprinkles(el);
@@ -429,11 +435,12 @@ const FOCUS_SCREENS = new Set(['editor', 'export']);
 async function go(name, params = {}) {
   if (!screens[name]) name = 'home';
   if (current === 'editor' && name !== 'editor') await EDITOR.close().catch(() => {});
+  if (current === 'remix') closeRemix();
   current = name;
   currentParams = params;
   // Remember where you are, so a relaunch comes back here (Prompt 5). Only plain values are kept.
   const keep = params.id ? { id: params.id } : {};
-  SESSION.set({ screen: name, params: keep, ...(name === 'editor' ? {} : { panel: null, selected: null, playhead: null }) });
+  SESSION.set({ screen: name, params: keep, recipe: name === 'remix' ? params.recipe || null : null, ...(name === 'editor' ? {} : { panel: null, selected: null, playhead: null }) });
   // The editor and export screens use the whole screen (no tab bar, no install banner).
   $('#app').classList.toggle('focus', FOCUS_SCREENS.has(name));
   const main = $('#screen');
@@ -691,7 +698,7 @@ async function restoreSession(session, stopped) {
   if (skip) { await go('home'); return; }
   const id = session.params?.id;
   if (s === 'editor') await go('editor', { id, restore: session });
-  else await go(s, id ? { id } : {});
+  else await go(s, { ...(id ? { id } : {}), ...(s === 'remix' && session.recipe ? { recipe: session.recipe } : {}) });
   if (current === s) toast('Restored. Right where you left off.', { sparkle: true, ms: 1800 });
 }
 
