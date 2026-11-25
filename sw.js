@@ -1,7 +1,7 @@
 // Cake Walk: service worker
 // APP_VERSION must match config.js. Changing it here is how the installed app notices an update.
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.3.0';
 const CACHE_NAME = `cakewalk-${APP_VERSION}`;
 const MEDIABUNNY_URL = 'https://cdn.jsdelivr.net/npm/mediabunny@1.66.4/dist/bundles/mediabunny.min.mjs';
 const AI_HOST = 'generativelanguage.googleapis.com';
@@ -16,6 +16,7 @@ const APP_FILES = [
   './app.js',
   './editor.js',
   './export.js',
+  './platforms.js',
   './debug.js',
   './worker.js',
   './manifest.json',

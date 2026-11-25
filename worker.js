@@ -116,6 +116,385 @@ handlers['opfs.list'] = async () => {
   return out;
 };
 
+// ---------- Clips: read the details and the filmstrip (Prompt 2) ----------
+
+async function readFile(path) {
+  closeHandle(path);
+  const fh = await getFileHandle(path, false);
+  return fh.getFile();
+}
+
+async function openInput(path) {
+  const mb = await loadMediabunny();
+  const file = await readFile(path);
+  return { mb, file, input: new mb.Input({ source: new mb.BlobSource(file), formats: mb.ALL_FORMATS }) };
+}
+
+async function jpeg(canvas) {
+  return canvas.convertToBlob({ type: 'image/jpeg', quality: 0.7 });
+}
+
+handlers['clip.probe'] = async ({ path, type, photoSeconds = 3 }) => {
+  if (String(type).startsWith('image/')) {
+    const file = await readFile(path);
+    const bmp = await createImageBitmap(file);
+    const out = { kind: 'photo', width: bmp.width, height: bmp.height, duration: photoSeconds, size: file.size, codec: type, fps: null, hdr: null, hasAudio: false };
+    bmp.close();
+    return out;
+  }
+  const { input, file } = await openInput(path);
+  try {
+    const format = await input.getFormat().catch(() => null);
+    const video = await input.getPrimaryVideoTrack();
+    const audio = await input.getPrimaryAudioTrack();
+    const duration = await input.computeDuration();
+    if (!video) {
+      if (!audio) throw new Error('No video or sound found in this file');
+      return {
+        kind: 'audio', duration, size: file.size, format: format?.name || null,
+        codec: audio.codec, sampleRate: audio.sampleRate, channels: audio.numberOfChannels,
+        canDecode: await audio.canDecode()
+      };
+    }
+    let fps = null;
+    try { fps = (await video.computeFrameRateMetrics()).bestGuessFrameRate; } catch {}
+    let transfer = null;
+    try { transfer = (await video.getColorSpace())?.transfer || null; } catch {}
+    const hdr = await video.hasHighDynamicRange().catch(() => false);
+    return {
+      kind: 'video',
+      format: format?.name || null,
+      duration,
+      size: file.size,
+      width: video.displayWidth,
+      height: video.displayHeight,
+      rotation: video.rotation,
+      fps: fps ? Math.round(fps * 100) / 100 : null,
+      codec: video.codec,
+      codecString: await video.getCodecParameterString().catch(() => null),
+      hdr: hdr ? (transfer === 'pq' ? 'PQ' : transfer === 'hlg' ? 'HLG' : 'HDR') : null,
+      canDecode: await video.canDecode(),
+      hasAudio: !!audio,
+      audioCodec: audio?.codec || null,
+      audioCanDecode: audio ? await audio.canDecode() : false
+    };
+  } finally {
+    input.dispose();
+  }
+};
+
+handlers['clip.thumbs'] = async ({ path, kind, duration, width = 96, every = 2, max = 40 }) => {
+  if (kind === 'photo') {
+    const bmp = await createImageBitmap(await readFile(path));
+    const h = Math.round(width * bmp.height / bmp.width) || width;
+    const c = new OffscreenCanvas(width, h);
+    c.getContext('2d').drawImage(bmp, 0, 0, width, h);
+    bmp.close();
+    return [await jpeg(c)];
+  }
+  const { mb, input } = await openInput(path);
+  try {
+    const video = await input.getPrimaryVideoTrack();
+    if (!video || !(await video.canDecode())) return [];
+    const start = await video.getFirstTimestamp().catch(() => 0);
+    const count = Math.max(1, Math.min(max, Math.ceil(duration / every)));
+    const times = Array.from({ length: count }, (_, i) => start + (duration * (i + 0.5)) / count);
+    const sink = new mb.CanvasSink(video, { width, poolSize: 0 });
+    const out = [];
+    for await (const wrapped of sink.canvasesAtTimestamps(times)) {
+      if (wrapped) out.push(await jpeg(wrapped.canvas));
+    }
+    return out;
+  } finally {
+    input.dispose();
+  }
+};
+
+// ---------- Export (Prompt 3) ----------
+// One frame at a time: decode, draw on an OffscreenCanvas, encode, write straight into OPFS.
+// Nothing holds the whole video in memory. Audio is mixed one second at a time, interleaved with video.
+
+const cancelled = new Set();
+const RATE = 48000;
+
+handlers['export.cancel'] = async ({ job }) => { cancelled.add(job); return true; };
+
+function drawCover(ctx, src, sw, sh, W, H) {
+  const s = Math.max(W / sw, H / sh);
+  const dw = sw * s, dh = sh * s;
+  ctx.drawImage(src, (W - dw) / 2, (H - dh) / 2, dw, dh);
+}
+
+// Mix one source's sound into out[L,R] for timeline range [a, b).
+async function mixSource(src, a, b, out, frames) {
+  // src: { sink, tlStart, srcStart, srcEnd, gain(tl) }
+  const tlEnd = src.tlStart + (src.srcEnd - src.srcStart);
+  const from = Math.max(a, src.tlStart), to = Math.min(b, tlEnd);
+  if (to <= from) return;
+  const sFrom = src.srcStart + (from - src.tlStart), sTo = src.srcStart + (to - src.tlStart);
+  for await (const sample of src.sink.samples(Math.max(0, sFrom - 0.05), sTo + 0.05)) {
+    try {
+      const sr = sample.sampleRate, n = sample.numberOfFrames, ch = sample.numberOfChannels;
+      const planes = [];
+      for (let c = 0; c < Math.min(2, ch); c++) {
+        const buf = new Float32Array(n);
+        sample.copyTo(buf, { planeIndex: c, format: 'f32-planar' });
+        planes.push(buf);
+      }
+      if (planes.length === 1) planes.push(planes[0]);
+      const sampleTl = src.tlStart + (sample.timestamp - src.srcStart);
+      const k0 = Math.max(0, Math.ceil((Math.max(sampleTl, from) - a) * RATE));
+      const k1 = Math.min(frames, Math.floor((Math.min(sampleTl + n / sr, to) - a) * RATE));
+      for (let k = k0; k < k1; k++) {
+        const tl = a + k / RATE;
+        const pos = (tl - sampleTl) * sr;
+        const i0 = Math.floor(pos), f = pos - i0;
+        if (i0 < 0 || i0 >= n) continue;
+        const i1 = Math.min(n - 1, i0 + 1);
+        const g = src.gain(tl);
+        out[0][k] += (planes[0][i0] * (1 - f) + planes[0][i1] * f) * g;
+        out[1][k] += (planes[1][i0] * (1 - f) + planes[1][i1] * f) * g;
+      }
+    } finally {
+      sample.close();
+    }
+  }
+}
+
+handlers['export.run'] = async (p) => {
+  try {
+    return await runExport(p, p.codecString);
+  } catch (err) {
+    // If this iPhone refuses the exact H.264 level string, let Mediabunny pick one and try once more.
+    if (p.codecString && err?.name !== 'AbortError' && err?.name !== 'QuotaExceededError' && /config|codec|support/i.test(err?.message || '')) {
+      self.postMessage({ type: 'export-note', job: p.job, message: `Retrying without ${p.codecString}: ${err.message}` });
+      return runExport(p, null);
+    }
+    throw err;
+  }
+};
+
+async function runExport({ job, clips, music, width: W, height: H, fps, bitrate, audioBitrate = 256000, outPath, keyFrameInterval = 0.5 }, codecString) {
+  const mb = await loadMediabunny();
+  cancelled.delete(job);
+  const segs = [];
+  let tl = 0;
+  for (const c of clips) {
+    const len = (c.out - c.in) / c.speed;
+    segs.push({ ...c, tlStart: tl, tlEnd: tl + len });
+    tl += len;
+  }
+  const total = tl;
+  if (!(total > 0)) throw new Error('The timeline is empty');
+  const frameCount = Math.max(1, Math.round(total * fps));
+
+  // Open every source once.
+  const inputs = [];
+  for (const s of segs) {
+    if (s.kind === 'photo') {
+      s.bitmap = await createImageBitmap(await readFile(s.path));
+      continue;
+    }
+    const { input } = await openInput(s.path);
+    inputs.push(input);
+    const v = await input.getPrimaryVideoTrack();
+    s.videoSink = new mb.VideoSampleSink(v);
+    const a = await input.getPrimaryAudioTrack();
+    if (a && !s.muted && s.speed === 1 && s.volume > 0 && (await a.canDecode())) s.audioSink = new mb.AudioSampleSink(a);
+  }
+  const audioSources = segs.filter((s) => s.audioSink).map((s) => ({
+    sink: s.audioSink, tlStart: s.tlStart, srcStart: s.in, srcEnd: s.out, gain: () => s.volume
+  }));
+  if (music) {
+    const { input } = await openInput(music.path);
+    inputs.push(input);
+    const a = await input.getPrimaryAudioTrack();
+    if (a && (await a.canDecode())) {
+      // offset: where this file starts on the full timeline (Story parts). Fades follow the full timeline.
+      const offset = music.offset || 0;
+      const fullEnd = Math.min(music.fullLength || total, music.duration || Infinity);
+      const first = await a.getFirstTimestamp().catch(() => 0);
+      const fi = music.fadeIn || 0, fo = music.fadeOut || 0;
+      if (fullEnd > offset) {
+        audioSources.push({
+          sink: new mb.AudioSampleSink(a), tlStart: 0, srcStart: first + offset, srcEnd: first + Math.min(fullEnd, offset + total),
+          gain: (t) => {
+            const T = t + offset;
+            let g = music.volume ?? 1;
+            if (fi > 0 && T < fi) g *= T / fi;
+            if (fo > 0 && T > fullEnd - fo) g *= Math.max(0, (fullEnd - T) / fo);
+            return g;
+          }
+        });
+      }
+    }
+  }
+
+  // Output file in OPFS, written through a sync access handle.
+  closeHandle(outPath);
+  const ah = await getAccessHandle(outPath);
+  ah.truncate(0);
+  const target = new mb.StreamTarget(new WritableStream({
+    write(chunk) {
+      const view = chunk.data;
+      let done = 0;
+      while (done < view.byteLength) {
+        const n = ah.write(view.subarray(done), { at: chunk.position + done });
+        if (!n) throw new Error('Nothing was written');
+        done += n;
+      }
+    }
+  }));
+  // fastStart 'reserve' needs maximumPacketCount on every track. // VERIFY on iOS 26.
+  const output = new mb.Output({ format: new mb.Mp4OutputFormat({ fastStart: 'reserve' }), target });
+  const canvas = new OffscreenCanvas(W, H);
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const videoConfig = { codec: 'avc', bitrate, bitrateMode: 'variable', keyFrameInterval };
+  if (codecString) videoConfig.fullCodecString = codecString;
+  const videoSource = new mb.CanvasSource(canvas, videoConfig);
+  output.addVideoTrack(videoSource, { frameRate: fps, maximumPacketCount: Math.ceil(frameCount * 1.1) + 60 });
+  // AAC-LC 48 kHz stereo. If this browser can't encode AAC (only seen outside iOS), export picture only and say so.
+  const canAac = await mb.canEncodeAudio('aac', { numberOfChannels: 2, sampleRate: RATE, bitrate: audioBitrate }).catch(() => false);
+  const audioSource = canAac ? new mb.AudioSampleSource({ codec: 'aac', bitrate: audioBitrate }) : null;
+  if (audioSource) output.addAudioTrack(audioSource, { maximumPacketCount: Math.ceil((total * RATE) / 1024 * 1.33) + 200 });
+
+  const cleanup = async (removeFile) => {
+    inputs.forEach((i) => { try { i.dispose(); } catch {} });
+    segs.forEach((s) => s.bitmap?.close());
+    closeHandle(outPath);
+    if (removeFile) {
+      try { const { dirs, name } = splitPath(outPath); await (await getDir(dirs, false)).removeEntry(name); } catch {}
+    }
+  };
+
+  try {
+    await output.start();
+    let audioDone = 0;
+    const pushAudioUntil = async (until) => {
+      if (!audioSource) { audioDone = until; return; }
+      while (audioDone < until - 1e-9) {
+        const a = audioDone, b = Math.min(until, audioDone + 1);
+        const frames = Math.round((b - a) * RATE);
+        if (frames <= 0) { audioDone = b; break; }
+        const out = [new Float32Array(frames), new Float32Array(frames)];
+        for (const src of audioSources) await mixSource(src, a, b, out, frames);
+        const planar = new Float32Array(frames * 2);
+        for (let k = 0; k < frames; k++) {
+          planar[k] = Math.max(-1, Math.min(1, out[0][k]));
+          planar[frames + k] = Math.max(-1, Math.min(1, out[1][k]));
+        }
+        const sample = new mb.AudioSample({ data: planar, format: 'f32-planar', numberOfChannels: 2, sampleRate: RATE, timestamp: a });
+        await audioSource.add(sample);
+        sample.close();
+        audioDone = b;
+      }
+    };
+
+    let frame = 0;
+    for (const s of segs) {
+      const first = Math.ceil(s.tlStart * fps - 1e-6);
+      const last = Math.min(frameCount, Math.ceil(s.tlEnd * fps - 1e-6));
+      if (last <= first) continue;
+      const times = [];
+      for (let i = first; i < last; i++) times.push(s.in + (i / fps - s.tlStart) * s.speed);
+      const iter = s.videoSink ? s.videoSink.samplesAtTimestamps(times)[Symbol.asyncIterator]() : null;
+      for (let i = first; i < last; i++) {
+        if (cancelled.has(job)) throw new DOMException('Export cancelled', 'AbortError');
+        const t = i / fps;
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, W, H);
+        if (s.bitmap) {
+          drawCover(ctx, s.bitmap, s.bitmap.width, s.bitmap.height, W, H);
+        } else if (iter) {
+          const { value: sample } = await iter.next();
+          if (sample) {
+            try { sample.drawWithFit(ctx, { fit: 'cover' }); } finally { sample.close(); }
+          }
+        }
+        if (t >= audioDone) await pushAudioUntil(Math.min(total, audioDone + 1));
+        await videoSource.add(t, 1 / fps);
+        frame = i + 1;
+        if (frame % 10 === 0) self.postMessage({ type: 'export-progress', job, fraction: frame / frameCount });
+      }
+      if (iter?.return) await iter.return();
+    }
+    await pushAudioUntil(total);
+    await output.finalize();
+    const size = ah.getSize();
+    await cleanup(false);
+    self.postMessage({ type: 'export-progress', job, fraction: 1 });
+    return { path: outPath, size, duration: total, frames: frameCount, audio: !!audioSource };
+  } catch (err) {
+    try { await output.cancel(); } catch {}
+    await cleanup(true);
+    throw err;
+  } finally {
+    cancelled.delete(job);
+  }
+}
+
+// ---------- SPEC CHECK (Prompt 4): read a finished export back and report what's really in it ----------
+
+// Walk the top-level MP4 boxes: fast start means the index (moov) comes before the media (mdat).
+async function topBoxes(file) {
+  const boxes = [];
+  let pos = 0;
+  while (pos + 8 <= file.size && boxes.length < 64) {
+    const head = new DataView(await file.slice(pos, pos + 16).arrayBuffer());
+    let size = head.getUint32(0);
+    const type = String.fromCharCode(head.getUint8(4), head.getUint8(5), head.getUint8(6), head.getUint8(7));
+    if (size === 1) size = Number(head.getBigUint64(8));
+    else if (size === 0) size = file.size - pos;
+    if (size < 8) break;
+    boxes.push({ type, pos, size });
+    pos += size;
+  }
+  return boxes;
+}
+
+handlers['export.check'] = async ({ path }) => {
+  const { mb, input, file } = await openInput(path);
+  try {
+    const boxes = await topBoxes(file);
+    const moov = boxes.find((b) => b.type === 'moov'), mdat = boxes.find((b) => b.type === 'mdat');
+    const video = await input.getPrimaryVideoTrack();
+    const audio = await input.getPrimaryAudioTrack();
+    const duration = await input.computeDuration();
+    const facts = { size: file.size, duration, fastStart: !!(moov && mdat && moov.pos < mdat.pos), boxes: boxes.map((b) => b.type).join(','), video: null, audio: null, maxKeyGap: null };
+    if (video) {
+      let fps = null;
+      try { fps = (await video.computeFrameRateMetrics()).bestGuessFrameRate; } catch {}
+      let colorSpace = null;
+      try { colorSpace = await video.getColorSpace(); } catch {}
+      facts.video = {
+        width: video.displayWidth, height: video.displayHeight, codec: video.codec, fps,
+        codecString: await video.getCodecParameterString().catch(() => null), colorSpace
+      };
+      // Keyframe spacing, read from packet headers only (no picture data).
+      try {
+        const sink = new mb.EncodedPacketSink(video);
+        let pkt = await sink.getFirstKeyPacket({ metadataOnly: true });
+        let prev = null, gap = 0, n = 0;
+        while (pkt && n < 100000) {
+          if (prev !== null) gap = Math.max(gap, pkt.timestamp - prev);
+          prev = pkt.timestamp;
+          n++;
+          pkt = await sink.getNextKeyPacket(pkt, { metadataOnly: true });
+        }
+        if (prev !== null) gap = Math.max(gap, duration - prev);
+        facts.maxKeyGap = gap;
+        facts.keyframes = n;
+      } catch {}
+    }
+    if (audio) {
+      facts.audio = { codec: audio.codec, sampleRate: audio.sampleRate, channels: audio.numberOfChannels, codecString: await audio.getCodecParameterString().catch(() => null) };
+    }
+    return facts;
+  } finally {
+    input.dispose();
+  }
+};
+
 // ---------- Capability checks that only make sense inside the Worker ----------
 
 handlers['caps'] = async () => {

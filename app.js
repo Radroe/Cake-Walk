@@ -102,6 +102,7 @@ function applyTheme(id) {
 
 let settings = {};
 let current = 'home';
+let currentParams = {};
 let lastCaps = null;
 const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 const isStandalone = () => navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
@@ -215,7 +216,7 @@ function emptyState(title, text) {
   return el;
 }
 
-const ui = { sprinkleSVG, toast, sheet, soon, emptyState, mascotName };
+const ui = { sprinkleSVG, toast, sheet, soon, emptyState, mascotName, go: (name, params) => go(name, params), get settings() { return settings; } };
 
 // ---------- Screens ----------
 
@@ -268,22 +269,22 @@ const screens = {
       h.textContent = p.name;
       const meta = document.createElement('p');
       meta.className = 'muted small';
-      meta.textContent = `${p.lane} · edited ${new Date(p.updatedAt).toLocaleDateString()}`;
+      const n = (p.clips || []).length;
+      meta.textContent = `${p.lane} · ${n} clip${n === 1 ? '' : 's'} · edited ${new Date(p.updatedAt).toLocaleDateString()}`;
       grow.append(h, meta);
       card.appendChild(grow);
-      card.addEventListener('click', () => go('editor'));
+      card.addEventListener('click', () => go('editor', { id: p.id }));
       list.appendChild(card);
     });
   },
 
-  editor(main) {
-    const el = clone('tpl-editor');
-    main.appendChild(el);
-    EDITOR.render($('[data-slot="body"]', el), ui);
+  async editor(main, params) {
+    await EDITOR.render(main, ui, params.id || (await STORAGE.get('meta', 'lastProject')));
+    if (EDITOR.project) await STORAGE.put('meta', EDITOR.project.id, 'lastProject');
   },
 
-  export(main) {
-    EXPORT.render(main, ui);
+  async export(main, params) {
+    await EXPORT.render(main, ui, params.id);
   },
 
   async settings(main) {
@@ -293,6 +294,11 @@ const screens = {
       input.value = settings[input.dataset.key] || '';
       input.addEventListener('input', () => queueSetting(input.dataset.key, input.value));
       input.addEventListener('change', () => flushSettings());
+    });
+    // Platform switches (Prompt 4): plain on/off values, saved like the rest of Settings.
+    el.querySelectorAll('input[data-flag]').forEach((input) => {
+      input.checked = !!settings[input.dataset.flag];
+      input.addEventListener('change', () => { queueSetting(input.dataset.flag, input.checked); flushSettings(); });
     });
     const themes = $('[data-slot="themes"]', el);
     THEMES.forEach((t) => {
@@ -396,9 +402,15 @@ function renderWarnings(box) {
   });
 }
 
-async function go(name) {
+const FOCUS_SCREENS = new Set(['editor', 'export']);
+
+async function go(name, params = {}) {
   if (!screens[name]) name = 'home';
+  if (current === 'editor' && name !== 'editor') await EDITOR.close().catch(() => {});
   current = name;
+  currentParams = params;
+  // The editor and export screens use the whole screen (no tab bar, no install banner).
+  $('#app').classList.toggle('focus', FOCUS_SCREENS.has(name));
   const main = $('#screen');
   main.innerHTML = '';
   main.scrollTop = 0;
@@ -407,11 +419,29 @@ async function go(name) {
     else t.removeAttribute('aria-current');
   });
   try {
-    await screens[name](main);
+    await screens[name](main, params);
   } catch (err) {
     DEBUG.log('error', err.message, `screen ${name}`);
     main.appendChild(emptyState('Something slipped.', 'This screen hit a snag. Debug has the details for Claude.'));
   }
+}
+
+// ---------- New video: a name and a lane (PRO or CREATIVE) ----------
+
+async function newVideo() {
+  const body = clone('tpl-newvideo');
+  let lane = 'PRO';
+  body.querySelectorAll('.lane').forEach((b) => b.addEventListener('click', () => {
+    lane = b.dataset.lane;
+    body.querySelectorAll('.lane').forEach((x) => x.classList.toggle('on', x === b));
+  }));
+  const input = $('[data-slot="name"]', body);
+  const ok = await sheet({ title: 'New video', body, actions: [{ label: 'Cancel', value: false }, { label: 'Start', value: true, main: true }] });
+  if (!ok) return;
+  const name = input.value.trim() || `Video ${new Date().toLocaleDateString()}`;
+  const project = await PROJECTS.create({ name, lane });
+  DEBUG.log('info', `New ${lane} project`, 'projects');
+  go('editor', { id: project.id });
 }
 
 // ---------- Settings saving (debounced; stays on the phone) ----------
@@ -535,7 +565,7 @@ function bindGlobal() {
     if (!actEl) return;
     const act = actEl.dataset.act;
     if (act === 'soon') soon(actEl.dataset.feature || 'This');
-    else if (act === 'new-video') go('editor');
+    else if (act === 'new-video') newVideo();
     else if (act === 'more') sheet({ title: 'More tools', body: clone('tpl-more') });
     else if (act === 'icons') go('icons');
     else if (act === 'hide-install') {
@@ -630,6 +660,8 @@ async function start() {
 
   bindGlobal();
   renderInstallBanner();
+  const stopped = await EXPORT.cleanupInterrupted();
+  if (stopped) setTimeout(() => toast('Your export stopped when the app closed. Open the project and export again.', { ms: 4200 }), 800);
   lastCaps = await DEBUG.getCaps();
   await go('home');
   DEBUG.log('info', `Launched v${CONFIG.APP_VERSION} as ${DEBUG.displayMode()} in ${Math.round(performance.now() - t0)} ms`);

@@ -15,6 +15,10 @@ const MIGRATIONS = [
     db.createObjectStore('settings');                       // key/value Settings (stays on the phone)
     db.createObjectStore('projects', { keyPath: 'id' });    // one record per project
     db.createObjectStore('log', { keyPath: 'id', autoIncrement: true }); // Debug log
+  },
+  // 1 -> 2: filmstrip thumbnails live in their own store, keyed by asset id
+  (db) => {
+    db.createObjectStore('thumbs');                         // assetId -> [Blob, ...]
   }
 ];
 
@@ -109,7 +113,9 @@ export const PROJECTS = {
       lane,
       createdAt: now,
       updatedAt: now,
-      clips: [],
+      assets: {},     // assetId -> what was imported (file path in OPFS, size, codec, length)
+      clips: [],      // the timeline, in order: { id, assetId, in, out, speed, volume, muted }
+      music: null,    // { assetId, volume, fadeIn, fadeOut }
       caption: ''
     };
     await STORAGE.put('projects', project);
@@ -178,5 +184,42 @@ export const OPFS = {
   read(path) { return WORKER.call('opfs.read', { path }, [], 120000); },   // returns a File
   size(path) { return WORKER.call('opfs.size', { path }); },
   remove(path) { return WORKER.call('opfs.remove', { path }); },
-  list() { return WORKER.call('opfs.list', {}, [], 60000); }               // [{ path, size }]
+  list() { return WORKER.call('opfs.list', {}, [], 60000); },              // [{ path, size }]
+
+  // Read a finished file straight from the main page (for the preview player and sharing).
+  async file(path) {
+    const parts = String(path).split('/').filter(Boolean);
+    let dir = await navigator.storage.getDirectory();
+    for (const d of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(d);
+    const fh = await dir.getFileHandle(parts[parts.length - 1]);
+    return fh.getFile();
+  },
+
+  // Copy a picked file into OPFS in chunks, with progress and Cancel.
+  // onProgress(fraction). Throws AbortError if cancelled; the half-copied file is deleted.
+  async copyIn(file, path, { onProgress, signal, chunk = CONFIG.EDITOR.COPY_CHUNK } = {}) {
+    let offset = 0;
+    try {
+      while (offset < file.size) {
+        if (signal?.aborted) throw new DOMException('Import cancelled', 'AbortError');
+        const buf = await file.slice(offset, offset + chunk).arrayBuffer();
+        await OPFS.write(path, offset, buf);
+        offset += buf.byteLength;
+        onProgress?.(file.size ? offset / file.size : 1);
+      }
+      await OPFS.close(path);
+      return offset;
+    } catch (err) {
+      await OPFS.remove(path).catch(() => {});
+      throw err;
+    }
+  }
+};
+
+// ---------- Thumbnails (filmstrip pictures, per imported clip) ----------
+
+export const THUMBS = {
+  get(assetId) { return STORAGE.get('thumbs', assetId); },
+  put(assetId, blobs) { return STORAGE.put('thumbs', blobs, assetId); },
+  remove(assetId) { return STORAGE.del('thumbs', assetId); }
 };

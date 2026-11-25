@@ -155,14 +155,123 @@
     </div>
   </template>
 
-  <!-- Editor (placeholder until Prompt 2) -->
-  <template id="tpl-editor">
-    <section>
-      <header class="screen-head">
-        <p class="label">Editor</p>
-        <h1>New video</h1>
+  <!-- Editor (Prompt 2) -->
+  <template id="tpl-editor-body">
+    <section class="editor">
+      <header class="ed-head">
+        <button class="icon-btn" data-act="ed-back" aria-label="Back to projects">‹</button>
+        <div class="ed-title"><b data-slot="name"></b><span class="pill" data-slot="lane"></span></div>
+        <button class="icon-btn" data-act="ed-undo" aria-label="Undo">↶</button>
+        <button class="icon-btn" data-act="ed-redo" aria-label="Redo">↷</button>
       </header>
-      <div data-slot="body"></div>
+
+      <div data-slot="empty" class="ed-empty">
+        <p class="label">Step 1</p>
+        <h2>Bring in your clips</h2>
+        <button class="btn btn-main wide" data-act="ed-quick">Quick import (Photos)</button>
+        <button class="btn btn-ghost wide" data-act="ed-files">Original quality (Files)</button>
+        <p class="note">For the exact original file: first save the clip to Files (in Photos, tap Share, then Save to Files), then pick it with Original quality. If iOS shows a menu, tap Choose File.</p>
+      </div>
+
+      <div data-slot="workspace" class="ed-work">
+        <div class="stage-wrap"><div class="stage" data-slot="stage"></div></div>
+        <div class="transport">
+          <button class="icon-btn play" data-act="ed-play" aria-label="Play">▶</button>
+          <span class="clock" data-slot="clock">0:00.0 / 0:00.0</span>
+          <button class="icon-btn" data-act="ed-zoom-out" aria-label="Zoom out">−</button>
+          <button class="icon-btn" data-act="ed-zoom-in" aria-label="Zoom in">＋</button>
+          <button class="icon-btn" data-act="ed-add" aria-label="Add clips">⊕</button>
+        </div>
+        <div data-slot="guard" class="guard"></div>
+        <div class="tl">
+          <div class="tl-scroll" data-slot="tl-scroll"><div class="tl-track" data-slot="tl-track"></div></div>
+          <div class="playhead" aria-hidden="true"></div>
+        </div>
+        <p class="muted small ed-meta" data-slot="meta"></p>
+        <div class="clipbar hidden" data-slot="clipbar">
+          <button data-act="ed-split">Split</button>
+          <button data-act="ed-speed">Speed</button>
+          <button data-act="ed-volume">Sound</button>
+          <button data-act="ed-dup">Duplicate</button>
+          <button data-act="ed-left" aria-label="Move left">◀</button>
+          <button data-act="ed-right" aria-label="Move right">▶</button>
+          <button data-act="ed-info">Info</button>
+          <button data-act="ed-del" class="danger">Delete</button>
+        </div>
+      </div>
+
+      <nav class="toolbar" aria-label="Editing tools">
+        <button data-act="ed-trim"><i>✂︎</i>Trim</button>
+        <button data-act="ed-split"><i>⫶</i>Split</button>
+        <button data-act="ed-text"><i>T</i>Text</button>
+        <button data-act="ed-music"><i>♪</i>Music</button>
+        <button data-act="ed-template"><i>▦</i>Template</button>
+        <button data-act="ed-more"><i>⋯</i>More</button>
+        <button data-act="ed-export" class="tb-main"><i>↑</i>Export</button>
+      </nav>
+    </section>
+  </template>
+
+  <!-- New video sheet body -->
+  <template id="tpl-newvideo">
+    <div>
+      <label class="field"><span>Project name</span><input data-slot="name" autocomplete="off" autocapitalize="sentences" placeholder="Walk video"></label>
+      <p class="label">Lane</p>
+      <div class="lanes">
+        <button class="lane on" data-lane="PRO"><b>PRO</b><span>Agencies and brands. Natural, clean, true skin.</span></button>
+        <button class="lane" data-lane="CREATIVE"><b>CREATIVE</b><span>Stylized looks, neon, sparkle.</span></button>
+      </div>
+    </div>
+  </template>
+
+  <!-- Export (Prompt 3) -->
+  <template id="tpl-export">
+    <section class="export">
+      <header class="ed-head">
+        <button class="icon-btn" data-act="ex-back" aria-label="Back to the editor">‹</button>
+        <div class="ed-title"><b>Export</b><span class="muted small" data-slot="name"></span></div>
+      </header>
+
+      <div data-slot="setup">
+        <div class="card">
+          <p class="label">Caption</p>
+          <textarea data-slot="caption" rows="3" placeholder="Your caption. It gets copied for you when you share."></textarea>
+        </div>
+        <div class="card">
+          <p class="label">Frame rate</p>
+          <div class="chips" data-slot="fps"></div>
+          <p class="label">Where it's going</p>
+          <div data-slot="formats" class="stack"></div>
+          <label class="switch"><input type="checkbox" data-slot="max"><span><b>Max quality</b><small class="muted"> Higher bitrate, bigger files.</small></span></label>
+          <p class="note" data-slot="estimate"></p>
+        </div>
+        <p class="note">Keep Cake Walk open until it's done. Leaving the app pauses the export.</p>
+        <button class="btn btn-main wide" data-act="ex-start">Export</button>
+      </div>
+
+      <div data-slot="running" class="hidden">
+        <div class="card runway-card">
+          <p class="label" data-slot="run-label">Exporting</p>
+          <div class="runway">
+            <div class="runway-bar"><i data-slot="bar"></i></div>
+            <div class="walker" data-slot="walker"></div>
+          </div>
+          <div class="kv"><span data-slot="pct">0%</span><b data-slot="eta">Starting</b></div>
+          <p class="note">Keep Cake Walk open until it's done. Leaving the app pauses the export.</p>
+        </div>
+        <button class="btn btn-ghost wide" data-act="ex-cancel">Cancel</button>
+      </div>
+
+      <div data-slot="done" class="hidden">
+        <div class="card">
+          <p class="label">Done</p>
+          <h2>Video ready. Caption copied.</h2>
+          <p class="muted">Tap Share, pick the app, then paste the caption.</p>
+          <div data-slot="files" class="stack"></div>
+          <button class="btn btn-ghost wide" data-act="ex-saveall">Save all</button>
+        </div>
+        <button class="btn btn-ghost wide" data-act="ex-again">Export again</button>
+      </div>
     </section>
   </template>
 
@@ -192,6 +301,15 @@
         <p class="label">Look</p>
         <div class="themes" data-slot="themes"></div>
         <label class="field"><span>Mascot's name</span><input data-key="sprinkleName" autocomplete="off" placeholder="Sprinkle"></label>
+      </div>
+
+      <div class="card">
+        <p class="label">Platforms</p>
+        <p class="note">Turn these on only if your account really has them. They change the length limits Cake Walk enforces.</p>
+        <label class="switch"><input type="checkbox" data-flag="tiktokLong"><span><b>TikTok up to 60 minutes</b><small class="muted"> If your account can post longer videos. Otherwise the limit is 10 minutes.</small></span></label>
+        <label class="switch"><input type="checkbox" data-flag="reelsLong"><span><b>Instagram over 3 minutes in the PRO lane</b><small class="muted"> Up to 20 minutes. Longer Reels aren't recommended to non-followers.</small></span></label>
+        <label class="switch"><input type="checkbox" data-flag="youtubeVerified"><span><b>YouTube verified account</b><small class="muted"> Lifts the 15 minute YouTube limit.</small></span></label>
+        <label class="switch"><input type="checkbox" data-flag="rewardsEligible"><span><b>Rewards eligible on TikTok</b><small class="muted"> Shows the Creator Rewards length badge on TikTok projects 1:00 or longer.</small></span></label>
       </div>
 
       <div class="card">
